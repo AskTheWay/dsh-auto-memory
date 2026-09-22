@@ -1,121 +1,127 @@
 # dsh-auto-memory
 
+[![npm version](https://img.shields.io/npm/v/dsh-auto-memory)](https://www.npmjs.com/package/dsh-auto-memory)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-auto-memory)](https://www.npmjs.com/package/dsh-auto-memory)
+[![License: MIT](https://img.shields.io/npm/l/dsh-auto-memory)](LICENSE)
+[![Node](https://img.shields.io/node/v/dsh-auto-memory)](package.json)
+
 [English](README.md) | [中文](README.zh.md)
 
-**把 Claude Code 的 auto-memory 机制移植为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的原生插件。**
+> ### 你的 dsh 智能体把你说过的每件事都忘掉。每一次。每一个会话。
+> **一条命令修复。** 把 Claude Code 式持久记忆带给
+> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)——原生实现,
+> 零服务器、零 embedding、零配置。
 
-为 dsh 智能体提供类型化持久记忆层:带 frontmatter 的记忆文件、自动注入系统提示词的
-`MEMORY.md` 索引、四个模型工具——轻量、纯文件、无外部服务、无 embedding 依赖。
+```sh
+dsh plugin --profile demo add dsh-auto-memory
+```
 
-## 为什么
+今天对它说 *"记住:我是准备面试的 Python 后端工程师"*——
+明天开一个全新会话,问 *"你对我有什么了解?"*,它**记得**。
 
-dsh 本体**没有记忆子系统**。官方对记忆的全部支持是三份*默认关闭*的 MCP 外挂配置
-(Memorix、MCP Reference Memory、Engram),官方文档自己承认其局限:不自动注入
-(模型必须主动调工具)、无自动摘要、无冲突消解、无遗忘策略。
+---
 
-`dsh-auto-memory` 用原生实现补上这一层:
+## Claude Code 有的东西,dsh 一直没有。现在有了。
 
-| 能力 | MCP 外挂方案 | dsh-auto-memory |
+DeepSeek Harness 是当下 GitHub 最火的开源智能体框架——模型、工具、沙箱,万物皆插件。
+但它**根本没有记忆子系统**。官方的答案是三份*默认关闭*的 MCP 外挂配置,而且官方文档
+自己承认局限:不自动注入、无遗忘策略、只做子串搜索。你的智能体是**设计层面的失忆症**。
+
+`dsh-auto-memory` 用原生实现补上这个缺口:
+
+| | MCP 外挂方案 | **dsh-auto-memory** |
 |---|---|---|
-| 索引自动注入每次系统提示词 | ✗ | ✓(无记忆时零占用) |
-| 类型化记忆(user / feedback / project / reference) | ✗ | ✓ |
-| 项目级 + 用户级分层,跨项目不串扰 | ✗ | ✓(作用域开关贯通全部工具路径) |
-| 崩溃/并发安全(跨进程文件锁 + 孤儿锁自愈) | — | ✓ |
-| 遗忘/淘汰策略(P1) | ✗ | 计划中 |
-| 会话结束自动固化(P1) | ✗ | 计划中 |
+| 记忆自动注入**每一次**系统提示词 | ✗ | ✓(无记忆时零 token 占用) |
+| 类型化记忆:user / feedback / project / reference | ✗ | ✓ |
+| 工作区 + 用户双层作用域——跨项目不串扰 | ✗ | ✓ |
+| 崩溃与并发安全(跨进程锁、孤儿锁自愈) | — | ✓ |
+| 需要外部服务 / 数据库 / embedding | ✓✓✓ | **全都不用——纯 Markdown 文件** |
+
+记忆是 `$DSH_HOME/memory/` 下的普通文件——可手改、可 grep、对 git 友好,完全属于你。
+
+## 一分钟感受它
+
+```sh
+node scripts/demo.mjs   # 不要 API key、不开浏览器:看 写入 → 索引 → 注入 → 召回 → 遗忘
+```
+
+或者在真实对话里:告诉智能体值得记住的事。模型调用
+`memory_write` / `memory_read` / `memory_list` / `memory_delete`,
+遵循 Claude Code 的写入纪律:**查重更新而非堆积**、只用绝对日期、
+`[[name]]` 交叉链接、`feedback` 记忆附 **Why:** / **How to apply:** 行。
+
+## 模型实际看到什么
+
+每个请求,一个系统提示词段(order 4000)携带索引——每步重新求值、字节预算控制、
+存储为空时**整段消失**:
+
+```
+# Persistent memory index
+## Project memories
+- [压测过 PostgreSQL](id-generator-benchmark.md) — psycopg2 连接池有踩坑经验 (2026-09)
+- [用户是 Python 后端工程师](user-prefers-python.md) — 正在准备面试; 偏好中文交流
+```
+
+中文标题、YAML frontmatter、一条记忆一个文件——完整的 Claude Code `MEMORY.md`
+模型,在 dsh 的提示词组装管线上原生重建。
+
+## 首发之前就被锤炼过
+
+这个插件在 v0.1.0 发布前经受了一次 **12 个智能体的对抗性代码审查**
+(68 万 token 的源码级拷问)。五个生产级陷阱被抓出并修复——全部带回归测试——
+其中两个若上线就是事故:
+
+- **NTFS 静默毁数据**:名为 `memory` 的记忆会在大小写不敏感文件系统上撞上
+  `MEMORY.md`——写入*报告成功*,实际销毁记录。保留字守卫拦截。
+- **毒提示炸弹**:任何记忆里三个字面 `{{{ }}}` 花括号,就能炸掉工作区的
+  *每一个*模型请求——且模型无法自救。收敛式消毒器中和。
+
+还有:孤儿锁自愈(Ctrl+C 砸不坏你的记忆库)、symlink 读取防护、坏文件容错、
+稳定的索引排序(保住 KV 前缀缓存)、严格不写自定义会话事件(那会让 dsh 会话
+拒绝 resume)。
+
+**40 项测试。运行时依赖仅 `yaml`。安装体积 15 kB。**
 
 ## 安装
 
-本地检出安装(npm 发布前):
-
 ```sh
-npm install && npm run build
-dsh plugin --profile demo add /绝对路径/dsh-auto-memory
-dsh --profile demo            # 重启 profile 生效
+dsh plugin --profile demo add dsh-auto-memory   # npm 直装(预构建)
+dsh --profile demo                               # 重启 profile 生效
 ```
 
-发布后:`dsh plugin --profile demo add dsh-auto-memory`。
-
+源码安装:`npm install && npm run build && dsh plugin --profile demo add /绝对路径`。
 要求 `@deepseek-ai/dsh >= 0.1.5-rc.2`(Node `^22.19 || >=24`)。
-
-## 使用
-
-直接告诉智能体值得记住的事:
-
-> "记住:我是 Python 后端工程师,正在准备面试,偏好中文交流。"
-
-模型会调 `memory_write`。同一工作区的下一次会话,注入的索引已经在场——
-问 *"你对我有什么了解?"* 它就能召回。
-
-工具:`memory_write` / `memory_read` / `memory_list` / `memory_delete`。
-写入规则对齐 Claude Code:查重更新而非堆积、不存代码库/AGENTS.md 已记录的内容、
-`feedback` 类型带 **Why:** / **How to apply:** 行、相对日期转绝对、正文 `[[name]]` 交叉链接。
-
-## 记忆保存在哪
-
-```
-$DSH_HOME/memory/                  # 默认 ~/.dsh/memory
-├── --<工作区slug>--/              # 项目层(slug 由会话 cwd 派生)
-│   ├── MEMORY.md                  # 索引(唯一被注入的部分)
-│   └── 每条记忆一个.md             # frontmatter + 正文
-└── _user/                         # 用户层(所有工作区共享)
-```
-
-每条记忆都是纯 Markdown——可手改、可 grep、对 git 友好:
-
-```markdown
----
-name: user-prefers-python
-title: 后端工程师,偏好 Python
-description: 正在准备面试;偏好中文交流
-type: user
----
-
-事实正文……用 [[其他记忆名]] 交叉链接。
-```
-
-## 工作原理
-
-- **写入路径**:工具 `execute` → name 归一化为 `[a-z0-9-]`(保留字拒绝)→
-  跨进程文件锁(官方 `dsh-atomic-write`)→ 原子写文件 → 全量重建索引。
-  崩溃留下的孤儿锁自动自愈(死 pid 检测)。
-- **注入路径**:单个动态系统提示词段(order 4000),每个 step 组装时重新求值;
-  同步读索引、字节预算截断、中和字面 `{{`(0.1.5 无 `interpolate` 开关)。
-  无记忆 → 空段 → 零 token。
-- **审计**:不写自定义会话事件(第三方事件类型会导致 dsh 会话 resume 拒读);
-  一切走标准 `tool/call` / `tool/result`。
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 覆盖(config 整表替换——须重述全部键):
+在 profile 的 `cordis.patch.yml` 覆盖(config 整表替换):
 
 ```yaml
 - id: auto-memory
   config:
-    maxBytes: 4096          # 注入预算(索引 + 指导文本)
+    maxBytes: 4096          # 注入预算
     memoryDir: D:/memories  # 默认: $DSH_HOME/memory
     enableUserScope: true   # false: 用户层在所有路径禁用
-    autoSummarize: false    # P1 占位
 ```
 
-## 设计与调研
+## 工作原理(60 秒)
 
-- [docs/design.md](docs/design.md) — 设计决策与取舍
-- [docs/api-reports.md](docs/api-reports.md) — 支撑每个实现选择的 dsh 源码级调研
-  (含本插件规避的陷阱清单)
+- **写入**:工具 `execute` → name 归一化为 `[a-z0-9-]`(保留字拒绝)→
+  跨进程文件锁(官方 `dsh-atomic-write`)→ 原子写 → 锁内全量重建索引。
+- **注入**:单个动态段,每步组装重新求值;同步读索引、执行字节预算、中和 `{{`。
+  工具写入在**下一个请求**即生效——永远不需要重启。
+- **审计**:不写自定义会话事件(第三方事件类型会让 dsh 拒绝 resume);
+  一切走标准 `tool/call` / `tool/result`。
+
+深度内容:[设计决策](docs/design.md) ·
+[dsh 源码级调研](docs/api-reports.md) ·
+[复盘:向 awesome-dsh-plugin 提 PR](docs/postmortem-pr-5696.md)
 
 ## 路线图
 
-- [x] P0:类型化存储 + 四工具 + 索引注入 + 分层作用域 + 崩溃安全
-- [ ] P1:会话结束自动固化、遗忘/淘汰、召回展开
-- [ ] P2:Web UI 记忆卡片、token 成本/召回质量评测
-
-## 验证
-
-```sh
-npx vitest run          # 40 项测试:存储逻辑、花括号回归、真实 Cordis 栈
-node scripts/demo.mjs   # 无 key 演示:写入 → 索引 → 注入 → 查重 → 删空
-```
+- [x] P0——类型化存储、四工具、提示词注入、分层作用域、崩溃安全
+- [ ] P1——会话结束自动固化、遗忘与淘汰、召回展开
+- [ ] P2——Web UI 记忆卡片、token 成本/召回质量评测
 
 ## 许可
 

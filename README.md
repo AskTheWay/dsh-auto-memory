@@ -1,130 +1,140 @@
 # dsh-auto-memory
 
+[![npm version](https://img.shields.io/npm/v/dsh-auto-memory)](https://www.npmjs.com/package/dsh-auto-memory)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-auto-memory)](https://www.npmjs.com/package/dsh-auto-memory)
+[![License: MIT](https://img.shields.io/npm/l/dsh-auto-memory)](LICENSE)
+[![Node](https://img.shields.io/node/v/dsh-auto-memory)](package.json)
+
 [English](README.md) | [中文](README.zh.md)
 
-**Claude Code-style auto-memory, as a native [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin.**
+> ### Your dsh agent forgets everything you tell it. Every. Single. Session.
+> **Fix it with one command.** Claude Code-style persistent memory for
+> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — native,
+> zero servers, zero embeddings, zero setup.
 
-A typed persistent-memory layer for dsh agents: memory files with frontmatter,
-a `MEMORY.md` index auto-injected into the system prompt, and four model-facing
-tools — lightweight, file-only, zero external services, no embeddings required.
+```sh
+dsh plugin --profile demo add dsh-auto-memory
+```
 
-## Why
+Say *"Remember: I'm a Python backend engineer preparing for interviews"* today —
+open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
+**remembers**.
 
-dsh itself has **no memory subsystem**. The official answer to memory is three
-*default-off* MCP bridge configs to third-party servers (Memorix, MCP Reference
-Memory, Engram) — which the official docs themselves qualify: not auto-injected
-(the model must choose to call a tool), no summarization, no conflict
-resolution, no forgetting.
+---
+
+## Claude Code has this. dsh didn't. Now it does.
+
+DeepSeek Harness is the hottest open agent harness on GitHub right now —
+models, tools, sandboxes, everything is a plugin. But it ships with **no memory
+subsystem at all**. The official answer is three *default-off* MCP configs to
+third-party servers, which the official docs themselves qualify: not
+auto-injected, no forgetting policy, substring-only search. Your agent has
+amnesia by design.
 
 `dsh-auto-memory` closes that gap natively:
 
-| Capability | MCP bridge approach | dsh-auto-memory |
+| | MCP bridge approach | **dsh-auto-memory** |
 |---|---|---|
-| Index auto-injected into every system prompt | ✗ | ✓ (zero footprint when empty) |
-| Typed memories (user / feedback / project / reference) | ✗ | ✓ |
-| Workspace-scoped + user-scoped layers, no cross-project leakage | ✗ | ✓ (scope flag enforced on every tool path) |
-| Crash/concurrency safety (cross-process file locks + orphan-lock recovery) | — | ✓ |
-| Forgetting / eviction policy (P1) | ✗ | planned |
-| Auto-consolidation on session end (P1) | ✗ | planned |
+| Memories injected into **every** system prompt, automatically | ✗ | ✓ (zero tokens when empty) |
+| Typed memories: user / feedback / project / reference | ✗ | ✓ |
+| Workspace + user scope layers — no cross-project leakage | ✗ | ✓ |
+| Crash & concurrency safety (cross-process locks, orphan recovery) | — | ✓ |
+| External services / databases / embeddings required | ✓✓✓ | **none — just plain Markdown files** |
+
+Memories are ordinary files under `$DSH_HOME/memory/` — hand-editable,
+grep-able, git-friendly, yours.
+
+## One minute to feel it
+
+```sh
+node scripts/demo.mjs   # no API key, no browser: watch write → index → inject → recall → forget
+```
+
+Or for real, in a chat: tell your agent things worth remembering. The model
+calls `memory_write` / `memory_read` / `memory_list` / `memory_delete`,
+following Claude Code's write discipline: **dedupe-and-update over piling up**,
+absolute dates only, `[[name]]` cross-links, `feedback` memories carry
+**Why:** / **How to apply:** lines.
+
+## What the model actually sees
+
+Every request, one system-prompt section (order 4000) carries the index —
+re-evaluated per step, byte-budgeted, and **gone entirely when the store is
+empty**:
+
+```
+# Persistent memory index
+## Project memories
+- [压测过 PostgreSQL](id-generator-benchmark.md) — psycopg2 连接池有踩坑经验 (2026-09)
+- [用户是 Python 后端工程师](user-prefers-python.md) — 正在准备面试; 偏好中文交流
+```
+
+Chinese titles, YAML frontmatter, one file per memory — exactly the Claude
+Code `MEMORY.md` model, rebuilt natively on dsh's prompt-assembly pipeline.
+
+## Hardened before first release
+
+This plugin survived a **12-agent adversarial code review** (680k tokens of
+source-level scrutiny) before v0.1.0. Five production-grade traps were caught
+and fixed — with regression tests — including two that would have been
+field incidents:
+
+- **The NTFS silent destroyer**: a memory named `memory` collides with
+  `MEMORY.md` on case-insensitive filesystems — the write *succeeds* while
+  destroying the record. Blocked by a reserved-name guard.
+- **The poisoned-prompt bomb**: three literal `{{{ }}}` braces in any memory
+  could crash *every* model request in the workspace — with no way for the
+  model to self-recover. Neutralized by a converging sanitizer.
+
+Plus: orphaned-lock self-healing (Ctrl+C can't brick your memory store),
+symlink-read protection, malformed-file tolerance, stable index ordering to
+protect KV-prefix caches, and a strict no-custom-session-events policy (they
+make dsh sessions refuse to resume).
+
+**40 tests. 0 runtime deps beyond `yaml`. 15 kB installed.**
 
 ## Install
 
-From a checkout (until the package is published to npm):
-
 ```sh
-npm install && npm run build
-dsh plugin --profile demo add /absolute/path/to/dsh-auto-memory
-dsh --profile demo            # restart the profile to activate
+dsh plugin --profile demo add dsh-auto-memory   # from npm (prebuilt)
+dsh --profile demo                               # restart the profile
 ```
 
-Once published: `dsh plugin --profile demo add dsh-auto-memory`.
-
+From source: `npm install && npm run build && dsh plugin --profile demo add /abs/path`.
 Requires `@deepseek-ai/dsh >= 0.1.5-rc.2` (Node `^22.19 || >=24`).
-
-## Usage
-
-Just tell the agent things worth remembering:
-
-> "Remember: I'm a Python backend engineer, preparing for interviews, prefer Chinese."
-
-The model calls `memory_write`. Next session, same workspace, the injected
-index is already there — ask *"what do you know about me?"* and it recalls.
-
-Tools: `memory_write` / `memory_read` / `memory_list` / `memory_delete`.
-Write rules follow Claude Code: dedupe-and-update over piling up, never store
-what the codebase or AGENTS.md already records, `feedback` memories carry
-**Why:** / **How to apply:** lines, relative dates become absolute, bodies
-cross-link with `[[name]]`.
-
-## Where memories live
-
-```
-$DSH_HOME/memory/                  # defaults to ~/.dsh/memory
-├── --<workspace-slug>--/          # project layer (slug derived from session cwd)
-│   ├── MEMORY.md                  # the index (the only part injected)
-│   └── one-file-per-memory.md     # frontmatter + body
-└── _user/                         # user layer (shared across all workspaces)
-```
-
-Each memory is plain Markdown — hand-editable, grep-able, git-friendly:
-
-```markdown
----
-name: user-prefers-python
-title: Backend engineer, prefers Python
-description: Preparing for interviews; prefers Chinese
-type: user
----
-
-Facts… cross-link with [[other-memory]].
-```
-
-## How it works
-
-- **Write path**: tool `execute` → name normalized to `[a-z0-9-]` (reserved
-  names rejected) → cross-process file lock (official `dsh-atomic-write`) →
-  atomic file write → full index rebuild. Orphaned locks from crashes are
-  self-healed (stale-pid detection).
-- **Inject path**: one dynamic system-prompt section (order 4000) re-evaluated
-  on every step assembly; reads the index synchronously, enforces a byte
-  budget, neutralizes literal `{{` (0.1.5 has no `interpolate` switch). Empty
-  store → empty section → zero tokens.
-- **Audit**: no custom session events (third-party event types make dsh
-  sessions fail to resume); everything flows through standard `tool/call` /
-  `tool/result`.
 
 ## Configuration
 
-Override via your profile's `cordis.patch.yml` (config replaces wholesale —
-restate every key):
+Override in your profile's `cordis.patch.yml` (config replaces wholesale):
 
 ```yaml
 - id: auto-memory
   config:
-    maxBytes: 4096          # injection budget (index + policy text)
+    maxBytes: 4096          # injection budget
     memoryDir: D:/memories  # default: $DSH_HOME/memory
     enableUserScope: true   # false: user layer off on every path
-    autoSummarize: false    # P1 placeholder
 ```
 
-## Design & research
+## How it works (60 seconds)
 
-- [docs/design.md](docs/design.md) — design decisions and trade-offs
-- [docs/api-reports.md](docs/api-reports.md) — dsh source-level API research
-  backing every implementation choice (including the traps this plugin avoids)
+- **Write**: tool `execute` → name normalized to `[a-z0-9-]` (reserved names
+  rejected) → cross-process file lock (official `dsh-atomic-write`) → atomic
+  write → full index rebuild inside the lock.
+- **Inject**: one dynamic section re-evaluated on every step assembly; reads
+  the index synchronously, enforces the byte budget, neutralizes `{{`.
+  Tool writes take effect on the **very next request** — no restart, ever.
+- **Audit**: no custom session events (third-party types make dsh refuse to
+  resume); everything flows through standard `tool/call` / `tool/result`.
+
+Deep dives: [design decisions](docs/design.md) ·
+[dsh source-level research](docs/api-reports.md) ·
+[postmortem: shipping a PR to awesome-dsh-plugin](docs/postmortem-pr-5696.md)
 
 ## Roadmap
 
-- [x] P0: typed store + four tools + index injection + scoped layers + crash safety
-- [ ] P1: auto-consolidation on session end, forgetting/eviction, recall expansion
-- [ ] P2: Web UI memory cards, token-cost / recall-quality benchmarks
-
-## Verification
-
-```sh
-npx vitest run          # 40 tests: store logic, braces regression, real Cordis stack
-node scripts/demo.mjs   # key-less demo: write → index → injection → dedupe → empty
-```
+- [x] P0 — typed store, four tools, prompt injection, scoped layers, crash safety
+- [ ] P1 — auto-consolidation on session end, forgetting & eviction, recall expansion
+- [ ] P2 — Web UI memory cards, token-cost / recall-quality benchmarks
 
 ## License
 
