@@ -1,8 +1,8 @@
 # 复盘:向 awesome-dsh-plugin 提交收录 PR #5696 的排错记录
 
-- **日期**:2026-09-22
+- **日期**:2026-09-22(首轮)→ 2026-09-24(续轮,见 E6-E9)
 - **目标**:把 dsh-auto-memory 提交到 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)(16.5k★ 精选列表)收录
-- **结果**:PR [#5696](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5696) 最终以规范形态就绪(单数据文件投稿);过程中触发 5 个错误,跨流程、协议、OS、语言四层
+- **结果**:PR [#5696](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5696) 于 09-24 达到全绿(Submission gate ✅ + check ✅ + mergeable clean),进入人工评审;两轮共触发 9 个错误,跨流程、协议、OS、语言四层
 - **格式**:仿 dsh 官方 `.agents/notes/postmortem` 惯例
 
 ## 时间线与错误详解
@@ -50,15 +50,49 @@
 
 首次 `gh pr create` 被本地会话的权限策略拦截(命令未发出,GitHub 上从未存在"失败的 PR")。用户明确授权后以 `--body-file` 形式成功。提醒:**外向动作(发布、提 PR)被工具拦下时,先取得用户明确授权再重试,而不是绕行**。
 
+## 续轮(09-24):全部发生在"别人的仓库"里
+
+### E6. 年龄闸门的"自动重跑"承诺没有兑现
+
+- **现象**:两天后 PR 仍红;查 run 时间戳发现 gate 最新运行**停在提交那一刻**
+- **根因**:对方文案承诺 "re-runs by itself in ~23h",但定时巡检实际没跑(别人家的 bug,只能绕)
+- **修复**:往 PR 分支推同内容新 commit 手动触发
+- **教训**:CI 的自我承诺不可尽信;验证"自动重跑"看 **run 时间戳**,不是结论颜色
+
+### E7. "READMEs out of sync":我们没改文件,却"修改"了 README
+
+- **现象**:闸门过后 `check` 报 "PR modifies the READMEs … out of sync"
+- **排查**:比对三处 blob sha——分支 = fork main(还原干净),但**上游 main 已前进**(别的插件合并、README 被重新生成)
+- **根因**:PR 基线落后,合并视角下旧 README ≠ 最新生成结果。**看似我们动了手,实则没跟上别人**
+- **修复**:`merge-upstream` 同步 → 分支 force 重置到新 main → 重放 yml(PR 变为 1 commit / 1 文件)
+- **教训**:长命 PR 落后于 base 时,"我没改过"≠"diff 干净";blob sha 是文件真相的最硬证据
+
+### E8. 分支重置把 PR 带关了
+
+- **现象**:force 重置后 PR `state=closed`、head_sha=null
+- **根因**:分支历史被完全替换时 GitHub 的边缘状态
+- **修复**:`gh pr reopen` 无损恢复
+- **教训**:对 PR 分支 force 操作后,验证 PR 状态是流程的一部分
+
+### E9. `awesome-lint`:一个 `[[name]]` 引发的血案
+
+- **现象**:恰好 1 error @ 生成 README 中我们条目所在行(93 warning 不致命)
+- **根因**:描述里的 `[[name]] cross-links` 被 Markdown 解析为**引用型链接**,`[name]` 无对应定义 → `no-undefined-references`
+- **修复**:条目描述去双括号(插件内 `[[name]]` 记忆语法不受影响,受影响的只是被渲染的展示文本)
+- **教训**:进入"被机器渲染的 Markdown"的文本,裸方括号不是装饰,是语法
+
+**续轮元教训**:在别人的系统里排障,blob sha / run 时间戳 / 规则名构成证据链,比直觉可靠;"等待"与"失败"在 CI 界面上长得一样,只有日志能区分。
+
 ## 根因分层
 
 | 层 | 错误 | 关键词 |
 |---|---|---|
-| 流程层 | E1 | 未读贡献指南;改生成物而非数据源 |
-| 协议层 | E2 | API 返回换行 base64;解码器静默停止 |
+| 流程层 | E1, E7, E8 | 未读贡献指南;改生成物而非数据源;PR 基线落后;force 后未验证 PR |
+| 协议层 | E2, E9 | API 返回换行 base64;Markdown 引用型链接语义 |
 | OS 层 | E3 | Windows 管道缓冲 ~1MB |
 | 语言层 | E4 | `length` 的 UTF-16 语义 |
-| 无(等待) | E5 | 时间闸门自动重跑 |
+| 他人系统 | E6 | CI 承诺与实现不符,靠证据链识别 |
+| 无(等待) | E5 | 时间闸门/慢 job,只有日志能区分 |
 
 ## 可复用规则(沉淀)
 
