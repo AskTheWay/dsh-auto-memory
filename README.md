@@ -22,6 +22,28 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
+## What's new in 0.2.0 (P1)
+
+- **Auto-consolidation** (`autoSummarize: true`): when a root session ends, a
+  background LLM pass extracts durable new facts from the session and files
+  them as memories — deduplicated, capped, fully silent on failure. Claude
+  Code doesn't do this automatically.
+- **Forgetting & eviction**: every memory carries lifecycle metadata
+  (created/updated/reads); `memory_read` counts references; `staleAfterDays`
+  soft-hides zero-reference stale memories from the injected index (files
+  kept); `memory_prune` lists (dry-run) or deletes aged memories.
+- **Recall expansion**: `memory_read` resolves `[[name]]` cross-links one
+  level and attaches linked summaries.
+- `memory_delete_all` — guarded by `tools/pre-execute` **human approval**:
+  the model cannot self-confirm irreversible bulk deletes.
+- Hardened by a second adversarial review (11 agents): single-lock `clear`
+  (no concurrent-write escape), conditional index rebuild on `touch`
+  (no O(N) amplification), session-start stale refresh, subagent capture
+  cleanup, abortable consolidation.
+
+Tools: `memory_write` / `memory_read` / `memory_list` / `memory_delete` /
+`memory_prune` / `memory_delete_all`.
+
 ## Claude Code has this. dsh didn't. Now it does.
 
 DeepSeek Harness is the hottest open agent harness on GitHub right now —
@@ -133,7 +155,7 @@ Deep dives: [design decisions](docs/design.md) ·
 ## Roadmap
 
 - [x] P0 — typed store, four tools, prompt injection, scoped layers, crash safety
-- [ ] P1 — auto-consolidation on session end, forgetting & eviction, recall expansion
+- [x] P1 — auto-consolidation on session end, forgetting & eviction, recall expansion, human-gated bulk delete
 - [ ] P2 — Web UI memory cards, token-cost / recall-quality benchmarks
 
 ## License

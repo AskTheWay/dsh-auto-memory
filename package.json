@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Code style auto-memory plugin for DeepSeek Harness: typed memory files + MEMORY.md index auto-injected into the system prompt",
   "type": "module",
   "license": "MIT",
@@ -13,7 +13,10 @@
     },
     "./package.json": "./package.json"
   },
-  "files": ["lib", "cordis.patch.yml"],
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",
@@ -28,6 +31,8 @@
     "@deepseek-ai/dsh-agent": ">=0.1.5-rc.2 <0.2.0",
     "@deepseek-ai/dsh-atomic-write": ">=0.1.5-rc.2 <0.2.0",
     "@deepseek-ai/dsh-home-paths": ">=0.1.5-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-rc.2 <0.2.0",
     "@deepseek-ai/dsh-system-prompt": ">=0.1.5-rc.2 <0.2.0",
     "@deepseek-ai/dsh-tools": ">=0.1.5-rc.2 <0.2.0"
   },
@@ -46,7 +51,13 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "keywords": ["deepseek-harness", "dsh-plugin", "memory", "agent", "claude-code"],
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "memory",
+    "agent",
+    "claude-code"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AskTheWay/dsh-auto-memory.git"

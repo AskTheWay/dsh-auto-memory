@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { MemoryStore } from './store.ts'
 import { registerMemoryTools } from './tools.ts'
 import { MEMORY_SECTION, renderMemoryIndexText } from './prompt.ts'
+import { registerConsolidation } from './consolidate.ts'
 
 export const name = 'dsh-auto-memory'
 export const inject = ['tools', 'systemPrompt']
@@ -29,8 +30,14 @@ export interface Config {
   memoryDir?: string
   /** 是否启用用户级作用域(_user 目录注入所有会话)。 */
   enableUserScope: boolean
-  /** P1 预留:会话结束自动总结固化。当前仅占位,不影响行为。 */
+  /** P1:会话结束自动总结固化(需要可用模型路由;失败静默不影响会话)。 */
   autoSummarize: boolean
+  /** 单次固化最多写入的新记忆数。 */
+  autoSummarizeMaxMemories: number
+  /** 固化模型调用的输出 token 上限。 */
+  autoSummarizeMaxTokens: number
+  /** P1:软淘汰阈值(天)——超过且从未被读取的记忆在索引重建时从注入索引隐藏(文件保留)。0 禁用。 */
+  staleAfterDays: number
 }
 
 export const Config: z<Config> = z.object({
@@ -38,6 +45,9 @@ export const Config: z<Config> = z.object({
   memoryDir: z.string(),
   enableUserScope: z.boolean().default(true),
   autoSummarize: z.boolean().default(false),
+  autoSummarizeMaxMemories: z.number().default(5),
+  autoSummarizeMaxTokens: z.number().default(2048),
+  staleAfterDays: z.number().default(0),
 })
 
 export function apply(ctx: Context, config: Config): void {
@@ -45,9 +55,32 @@ export function apply(ctx: Context, config: Config): void {
   const rootDir = config.memoryDir !== undefined && config.memoryDir.length > 0
     ? resolve(config.memoryDir)
     : join(resolveDshHome(), 'memory')
-  const store = new MemoryStore(rootDir)
+  const store = new MemoryStore(rootDir, { staleAfterDays: config.staleAfterDays })
 
   registerMemoryTools(ctx, store, config.enableUserScope)
+
+  // P1:会话结束自动固化(autoSummarize=false 时 no-op)
+  registerConsolidation(ctx, store, {
+    autoSummarize: config.autoSummarize,
+    autoSummarizeMaxMemories: config.autoSummarizeMaxMemories,
+    autoSummarizeMaxTokens: config.autoSummarizeMaxTokens,
+    enableUserScope: config.enableUserScope,
+  })
+
+  // P1:软淘汰的会话启动评估(审查 major 修复):淘汰是索引重建时的惰性评估,
+  // 无新写入的仓库永远等不到重建——每个会话首 agent 创建时刷新一次两层索引。
+  if (config.staleAfterDays > 0) {
+    const refreshed = new Set<string>()
+    ctx.on('agent/created', ({ agent }) => {
+      const cwd = agent.session.header.cwd
+      if (cwd === undefined) return
+      if (refreshed.has(agent.session.id)) return
+      refreshed.add(agent.session.id)
+      void store.refreshIndex('project', cwd)
+      if (config.enableUserScope) void store.refreshIndex('user')
+    })
+    ctx.on('session/disposed', session => { refreshed.delete(session.id) })
+  }
 
   // 唯一注入段:动态 text,每个 step 重组装时按当前 agent 的 cwd 重新求值;
   // 两层均无记忆时返回空串(整段消失,对齐 Claude Code"有记忆才注入")。

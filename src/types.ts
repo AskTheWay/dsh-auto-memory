@@ -24,6 +24,11 @@ export interface MemoryRecord {
   body: string
   /** 来源作用域(决定存储目录)。 */
   scope: MemoryScope
+  /** 生命周期元数据(P1 遗忘策略用;旧文件缺省时由解析层补全)。 */
+  createdMs?: number
+  updatedMs?: number
+  lastReadMs?: number
+  reads?: number
 }
 
 /** 用户级作用域的目录名(下划线前缀避免与项目 slug `--...--` 冲突)。 */

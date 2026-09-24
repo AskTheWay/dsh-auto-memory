@@ -28,13 +28,13 @@ describe('dsh-auto-memory 插件挂载', () => {
     await fsp.rm(root, { recursive: true, force: true })
   })
 
-  it('挂载成功:注册四个 memory_* 工具,不抛错', async () => {
+  it('挂载成功:注册全部六个 memory_* 工具,不抛错', async () => {
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime, {})
-    await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false })
+    await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false, autoSummarizeMaxMemories: 5, autoSummarizeMaxTokens: 2048, staleAfterDays: 0 })
 
     const names = ctx.tools.schemas().map(schema => schema.name)
-    for (const tool of ['memory_write', 'memory_read', 'memory_list', 'memory_delete']) {
+    for (const tool of ['memory_write', 'memory_read', 'memory_list', 'memory_delete', 'memory_prune', 'memory_delete_all']) {
       expect(names, `registered tools: ${names.join(', ')}`).toContain(tool)
     }
   })
@@ -42,7 +42,7 @@ describe('dsh-auto-memory 插件挂载', () => {
   it('系统提示词:唯一 memory 段注册、无记忆时段为空、渲染不抛错', async () => {
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime, {})
-    await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false })
+    await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false, autoSummarizeMaxMemories: 5, autoSummarizeMaxTokens: 2048, staleAfterDays: 0 })
 
     const assembly = await ctx.systemPrompt.assemble()
     // 裸组装无 agent:动态段求值为空串(渲染时被丢弃)——无记忆不占系统提示词
@@ -57,7 +57,7 @@ describe('dsh-auto-memory 插件挂载', () => {
   it('卸载(HMR 安全):dispose 后工具从注册表消失', async () => {
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime, {})
-    const fiber = await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false })
+    const fiber = await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false, autoSummarizeMaxMemories: 5, autoSummarizeMaxTokens: 2048, staleAfterDays: 0 })
     expect(ctx.tools.schemas().map(s => s.name)).toContain('memory_write')
     await fiber.dispose()
     expect(ctx.tools.schemas().map(s => s.name)).not.toContain('memory_write')

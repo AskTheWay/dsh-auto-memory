@@ -21,6 +21,23 @@ dsh plugin --profile demo add dsh-auto-memory
 
 ---
 
+## 0.2.0 新增(P1)
+
+- **自动固化**(`autoSummarize: true`):根会话结束时,后台 LLM 从会话中提取
+  值得长期保留的新事实并写入记忆——查重、限量、失败静默。Claude Code 没有全自动。
+- **遗忘与淘汰**:每条记忆携带生命周期元数据(created/updated/reads);
+  `memory_read` 累计引用;`staleAfterDays` 把零引用超龄记忆从注入索引软隐藏
+  (文件保留);`memory_prune` 列出(dry-run)或删除高龄记忆。
+- **召回展开**:`memory_read` 解析一层 `[[name]]` 交叉链接并附摘要。
+- `memory_delete_all`——由 `tools/pre-execute` **人工审批**把关:
+  模型无法自证通过不可逆批量删除。
+- 经第二轮对抗审查(11 个智能体)加固:clear 单锁窗口(并发写不逃逸)、
+  touch 条件重建(消除 O(N) 放大)、会话启动刷新软淘汰、子代理缓冲清理、
+  固化可中止。
+
+工具:`memory_write` / `memory_read` / `memory_list` / `memory_delete` /
+`memory_prune` / `memory_delete_all`。
+
 ## Claude Code 有的东西,dsh 一直没有。现在有了。
 
 DeepSeek Harness 是当下 GitHub 最火的开源智能体框架——模型、工具、沙箱,万物皆插件。
@@ -120,7 +137,7 @@ dsh --profile demo                               # 重启 profile 生效
 ## 路线图
 
 - [x] P0——类型化存储、四工具、提示词注入、分层作用域、崩溃安全
-- [ ] P1——会话结束自动固化、遗忘与淘汰、召回展开
+- [x] P1——会话结束自动固化、遗忘与淘汰、召回展开、人工审批的批量删除
 - [ ] P2——Web UI 记忆卡片、token 成本/召回质量评测
 
 ## 许可

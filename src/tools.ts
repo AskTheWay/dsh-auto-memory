@@ -26,8 +26,7 @@ function parseExplicitScope(raw: string | undefined): MemoryScope | undefined {
 }
 
 /** 注册四个记忆工具。 */
-export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUserScope: boolean): void {
-  /** 当前部署可访问的作用域(user 层被配置禁用时从一切路径剔除)。 */
+export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUserScope: boolean): void {  /** 当前部署可访问的作用域(user 层被配置禁用时从一切路径剔除)。 */
   const availableScopes = (): readonly MemoryScope[] => enableUserScope ? ['user', 'project'] : ['project']
 
   const guardScope = (scope: MemoryScope): MemoryScope => {
@@ -111,7 +110,8 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
 
   ctx.tools.register(defineTool({
     name: 'memory_read',
-    description: 'Read one persistent memory by name (full body). Search the injected memory index for the name first.',
+    description: 'Read one persistent memory by name (full body, with one level of [[name]] cross-links resolved). '
+      + 'Search the injected memory index for the name first.',
     parameters: {
       name: { type: 'string', required: true, description: 'Memory name from the index (kebab-case)' },
       scope: { type: 'string', enum: ['project', 'user'], description: 'Limit to one scope; default searches user then project' },
@@ -126,9 +126,27 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
           type: { type: 'string', required: true },
           body: { type: 'string', required: true },
           scope: { type: 'string', required: true },
+          linked: {
+            type: 'array',
+            description: 'One-line summaries of memories referenced via [[name]] in the body',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                description: { type: 'string', required: true },
+              },
+            },
+          },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}` }],
+      render: (_args, value) => {
+        const linkedList = value.linked ?? []
+        const linked = linkedList.length === 0
+          ? ''
+          : `\n\nLinked memories:\n${linkedList.map(l => `- ${l.name} — ${l.description}`).join('\n')}`
+        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${linked}` }]
+      },
     },
     async execute(args, exec) {
       const cwd = exec.agent?.session.header.cwd
@@ -138,7 +156,19 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         return store.findIn(args.name, availableScopes(), requireCwd(cwd))
       })()
       if (record === null) throw new Error(`memory not found: ${JSON.stringify(normalizeName(args.name))} — call memory_list to see available names`)
-      return { name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope }
+      // 读取计数(best-effort,失败不影响返回)
+      void store.touch(record.name, record.scope, cwd).catch(() => {})
+      // 召回展开:解析 body 中的 [[name]] 链接,附一层摘要(不递归)
+      const linkNames = [...record.body.matchAll(/\[\[([a-z0-9]+(?:-[a-z0-9]+)*)\]\]/g)].map(m => m[1])
+      const uniqueLinks = [...new Set(linkNames)]
+        .filter(name => name !== record.name)
+        .slice(0, 3)
+      const linked: { name: string; description: string }[] = []
+      for (const name of uniqueLinks) {
+        const target = await store.findIn(name, availableScopes(), cwd)
+        if (target !== null) linked.push({ name: target.name, description: target.description })
+      }
+      return { name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked }
     },
     isConcurrencySafe: () => true,
     presentCall: args => ({ card: 'generic', title: `Memory read: ${String(args.name)}`, kind: 'other', rawInput: args }),
@@ -226,4 +256,147 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
     },
     presentCall: args => ({ card: 'generic', title: `Memory delete: ${String(args.name)}`, kind: 'other', rawInput: args }),
   }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_prune',
+    description: 'List (dry-run, default) or delete memories not updated within olderThanDays. '
+      + 'Use to keep the store healthy: propose a dry-run first, show the candidates to the user, '
+      + 'then delete only with their consent. Memories without lifecycle metadata are never matched.',
+    parameters: {
+      olderThanDays: { type: 'integer', required: true, description: 'Match memories whose last update is older than this many days' },
+      scope: { type: 'string', enum: ['project', 'user'], description: 'Limit to one scope; default both' },
+      dryRun: { type: 'boolean', description: 'true (default): only list candidates; false: delete them' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          dryRun: { type: 'boolean', required: true },
+          deleted: { type: 'integer', required: true, description: 'Number actually deleted (0 in dry-run)' },
+          candidates: {
+            type: 'array', required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                description: { type: 'string', required: true },
+                scope: { type: 'string', required: true },
+                daysSinceUpdate: { type: 'integer', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        const head = value.dryRun
+          ? `Prune dry-run: ${value.candidates.length} candidate(s) older than threshold — re-run with dryRun=false to delete`
+          : `Pruned ${value.deleted} of ${value.candidates.length} candidate(s)`
+        const lines = value.candidates.map(c => `- ${c.name} (${c.scope}, ${c.daysSinceUpdate}d since update) — ${c.description}`)
+        return [{ type: 'text', text: lines.length === 0 ? `${head}.` : `${head}\n${lines.join('\n')}` }]
+      },
+    },
+    async execute(args, exec) {
+      // 下限校验(审查 minor 修复):0/负数会匹配全部有元数据记忆,等于绕过确认的批量删除
+      if (!Number.isSafeInteger(args.olderThanDays) || args.olderThanDays < 1) {
+        throw new Error('olderThanDays must be an integer >= 1')
+      }
+      const cwd = exec.agent?.session.header.cwd
+      const explicit = parseExplicitScope(args.scope)
+      const scopes: readonly MemoryScope[] = explicit !== undefined ? [guardScope(explicit)] : availableScopes()
+      const now = Date.now()
+      const candidates: { name: string; scope: MemoryScope; description: string; days: number }[] = []
+      for (const scope of scopes) {
+        const records = scope === 'project' ? await store.list(scope, requireCwd(cwd)) : await store.list(scope)
+        for (const record of records) {
+          const updated = record.updatedMs ?? record.createdMs
+          if (updated === undefined) continue
+          const days = Math.floor((now - updated) / 86_400_000)
+          if (days >= args.olderThanDays) candidates.push({ name: record.name, scope, description: record.description, days })
+        }
+      }
+      const dryRun = args.dryRun !== false
+      let deleted = 0
+      if (!dryRun) {
+        // 单条失败不中断整批(审查 minor 修复):如实计数,失败项留在候选清单中可重试
+        for (const candidate of candidates) {
+          try {
+            if (await store.delete(candidate.name, candidate.scope, candidate.scope === 'project' ? requireCwd(cwd) : cwd)) {
+              deleted += 1
+            }
+          } catch {
+            // 跳过失败项,计数如实
+          }
+        }
+      }
+      return {
+        dryRun,
+        deleted,
+        candidates: candidates.map(c => ({ name: c.name, description: c.description, scope: c.scope, daysSinceUpdate: c.days })),
+      }
+    },
+    presentCall: args => ({ card: 'generic', title: `Memory prune: ${String(args.olderThanDays)}d`, kind: 'other', rawInput: args }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_delete_all',
+    description: 'Delete ALL memories in a scope (or both). Destructive — requires confirm=true and '
+      + 'an explicit statement from the user that they want everything forgotten.',
+    parameters: {
+      scope: { type: 'string', enum: ['project', 'user'], description: 'Scope to clear; default both' },
+      confirm: { type: 'boolean', required: true, description: 'Must be explicitly true to delete' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          scopes: {
+            type: 'array', required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                scope: { type: 'string', required: true },
+                deleted: { type: 'integer', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Deleted ${value.scopes.map(s => `${s.deleted} in ${s.scope}`).join(', ')}`,
+      }],
+    },
+    async execute(args, exec) {
+      if (args.confirm !== true) throw new Error('memory_delete_all requires confirm=true (destructive); ask the user first')
+      const cwd = exec.agent?.session.header.cwd
+      const explicit = parseExplicitScope(args.scope)
+      const scopes: readonly MemoryScope[] = explicit !== undefined ? [guardScope(explicit)] : availableScopes()
+      const results = []
+      for (const scope of scopes) {
+        const deleted = await store.clear(scope, scope === 'project' ? requireCwd(cwd) : cwd)
+        results.push({ scope, deleted })
+      }
+      return { scopes: results }
+    },
+    presentCall: args => ({ card: 'generic', title: `Memory delete-all${args.scope === undefined ? '' : ` (${String(args.scope)})`}`, kind: 'other', rawInput: args }),
+  }))
+
+  // 破坏性操作的硬闸(审查 major 修复:模型自证 confirm 可被注入伪造):
+  // tools/pre-execute 返回 ask → 交由 dsh 审批服务向用户弹确认(allowed-once 才执行,
+  // 无审批服务的组合按 deny 处理)。模型无法单方通过。
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const decision = await next()
+    if (decision.kind !== 'allow') return decision
+    if (exec.name === 'memory_delete_all') {
+      return { kind: 'ask', reason: 'memory_delete_all permanently deletes every memory in scope' }
+    }
+    if (exec.name === 'memory_prune' && (exec.arguments as { dryRun?: boolean } | null)?.dryRun === false) {
+      return { kind: 'ask', reason: 'memory_prune (dryRun=false) permanently deletes matching memories' }
+    }
+    return decision
+  })
 }

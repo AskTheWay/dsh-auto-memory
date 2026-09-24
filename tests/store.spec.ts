@@ -10,7 +10,7 @@ import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
-  MemoryStore, INDEX_FILENAME, normalizeName, parseMemory, projectKey, serializeMemory, renderIndexBody,
+  MemoryStore, INDEX_FILENAME, isStale, mergeLifecycleMeta, normalizeName, parseMemory, projectKey, serializeMemory, renderIndexBody,
 } from '../src/store.ts'
 import type { MemoryRecord } from '../src/types.ts'
 
@@ -211,5 +211,122 @@ describe('renderIndexBody', () => {
     ])
     expect(text).toBe('- [a](a.md) — A\n')
     expect(text).not.toContain('#')
+  })
+})
+
+describe('P1:生命周期元数据与遗忘', () => {
+  it('write 写入 created/updated;更新时 created 保留、updated 刷新', async () => {
+    const first = await store.write({ name: 'a', description: 'd1', type: 'user', body: 'b1' }, 'project', CWD)
+    expect(first.createdMs).toBeGreaterThan(0)
+    expect(first.updatedMs).toBe(first.createdMs)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    const second = await store.write({ name: 'a', description: 'd2', type: 'user', body: 'b2' }, 'project', CWD)
+    expect(second.createdMs).toBe(first.createdMs)
+    expect(second.updatedMs!).toBeGreaterThan(first.updatedMs!)
+    // 落盘可读回
+    const parsed = await store.read('a', 'project', CWD)
+    expect(parsed?.createdMs).toBe(first.createdMs)
+  })
+
+  it('mergeLifecycleMeta:首次生成;更新保留读取计数', () => {
+    const now = 1_000_000
+    expect(mergeLifecycleMeta(null, now)).toEqual({ createdMs: now, updatedMs: now })
+    expect(mergeLifecycleMeta({ reads: 3, lastReadMs: 900, createdMs: 100, updatedMs: 200 } as MemoryRecord, now))
+      .toEqual({ createdMs: 100, updatedMs: now, lastReadMs: 900, reads: 3 })
+  })
+
+  it('touch 累计读取并持久化;不存在的记忆静默', async () => {
+    await store.write({ name: 'a', description: 'd', type: 'user', body: 'b' }, 'project', CWD)
+    await store.touch('a', 'project', CWD)
+    await store.touch('a', 'project', CWD)
+    expect((await store.read('a', 'project', CWD))?.reads).toBe(2)
+    await expect(store.touch('nope', 'project', CWD)).resolves.toBeUndefined()
+  })
+
+  it('isStale:零引用超龄为真;被读过/无元数据/禁用为假', () => {
+    const now = 100 * 86_400_000
+    const base = { name: 'a', description: 'd', type: 'user' as const, body: 'b', scope: 'project' as const }
+    expect(isStale({ ...base, updatedMs: now - 91 * 86_400_000, reads: 0 }, 90, now)).toBe(true)
+    expect(isStale({ ...base, updatedMs: now - 91 * 86_400_000, reads: 1 }, 90, now)).toBe(false)
+    expect(isStale({ ...base, updatedMs: now - 91 * 86_400_000 }, 90, now)).toBe(true) // reads 未计数视为零引用
+    expect(isStale(base, 90, now)).toBe(false) // 无 updated 元数据
+    expect(isStale({ ...base, updatedMs: now - 91 * 86_400_000, reads: 0 }, 0, now)).toBe(false) // 禁用
+  })
+
+  it('软淘汰:陈旧零引用记忆从注入索引隐藏,文件保留且 memory_list 可见', async () => {
+    const staleStore = new MemoryStore(root, { staleAfterDays: 90 })
+    await staleStore.write({ name: 'fresh', description: '新', type: 'user', body: 'x' }, 'project', CWD)
+    await staleStore.write({ name: 'old-zero-read', description: '旧零引用', type: 'user', body: 'x' }, 'project', CWD)
+    // 手工把第二条的 updated 改到 200 天前(模拟陈旧)
+    const dir = join(root, projectKey(CWD))
+    const raw = await fsp.readFile(join(dir, 'old-zero-read.md'), 'utf8')
+    const ancient = Date.now() - 200 * 86_400_000
+    await fsp.writeFile(join(dir, 'old-zero-read.md'), raw.replace(/^updated: \d+$/m, `updated: ${ancient}`), 'utf8')
+    // 再写一条触发索引重建(软淘汰在重建时评估)
+    await staleStore.write({ name: 'trigger', description: 't', type: 'user', body: 'x' }, 'project', CWD)
+    const index = staleStore.readIndexSync('project', CWD) ?? ''
+    expect(index).toContain('fresh')
+    expect(index).toContain('trigger')
+    expect(index).not.toContain('old-zero-read')
+    // 文件仍在,memory_list 可见
+    const records = await staleStore.list('project', CWD)
+    expect(records.map(r => r.name)).toContain('old-zero-read')
+  })
+
+  it('clear 清空作用域并返回条数', async () => {
+    await store.write({ name: 'a', description: 'd', type: 'user', body: 'x' }, 'project', CWD)
+    await store.write({ name: 'b', description: 'd', type: 'user', body: 'x' }, 'project', CWD)
+    expect(await store.clear('project', CWD)).toBe(2)
+    expect(await store.list('project', CWD)).toEqual([])
+    expect(store.readIndexSync('project', CWD)).toBeNull()
+  })
+
+  it('clear 与并发 write 单锁串行:终态一致,无中间快照逃逸(审查 major 回归)', async () => {
+    for (const name of ['a', 'b', 'c']) {
+      await store.write({ name, description: 'd', type: 'user', body: 'x' }, 'project', CWD)
+    }
+    // 并发:clear 与一条新写入同时发起——两者在索引锁上串行化
+    const [cleared] = await Promise.all([
+      store.clear('project', CWD),
+      store.write({ name: 'late', description: 'late', type: 'user', body: 'x' }, 'project', CWD),
+    ])
+    expect(cleared).toBe(3)
+    const remaining = await store.list('project', CWD)
+    // 终态一致:要么全空(write 先入且被删),要么只剩 late 且索引正确反映
+    const names = remaining.map(r => r.name)
+    if (names.length > 0) {
+      expect(names).toEqual(['late'])
+      expect(store.readIndexSync('project', CWD)).toContain('late')
+    } else {
+      expect(store.readIndexSync('project', CWD)).toBeNull()
+    }
+  })
+
+  it('touch 不再无条件重建索引(普通记忆 touch 后索引 mtime 不变;审查 major 回归)', async () => {
+    await store.write({ name: 'a', description: 'd', type: 'user', body: 'x' }, 'project', CWD)
+    const indexFile = join(root, projectKey(CWD), INDEX_FILENAME)
+    const before = (await fsp.stat(indexFile)).mtimeMs
+    await new Promise(resolve => setTimeout(resolve, 8))
+    await store.touch('a', 'project', CWD)
+    expect((await fsp.stat(indexFile)).mtimeMs).toBe(before)
+    // 计数仍被持久化
+    expect((await store.read('a', 'project', CWD))?.reads).toBe(1)
+  })
+
+  it('refreshIndex 兑现软淘汰:无写入的仓库经外部刷新后陈旧记忆隐藏(审查 major 回归)', async () => {
+    const staleStore = new MemoryStore(root, { staleAfterDays: 90 })
+    await staleStore.write({ name: 'old', description: '旧', type: 'user', body: 'x' }, 'project', CWD)
+    // 手工改旧 + 无任何新写入(僵尸仓库场景)
+    const dir = join(root, projectKey(CWD))
+    const raw = await fsp.readFile(join(dir, 'old.md'), 'utf8')
+    const ancient = Date.now() - 200 * 86_400_000
+    await fsp.writeFile(join(dir, 'old.md'), raw.replace(/^updated: \d+$/m, `updated: ${ancient}`), 'utf8')
+    // 此时索引仍是旧快照(含 old)
+    expect(staleStore.readIndexSync('project', CWD)).toContain('old')
+    // 会话启动挂点的刷新触发重算
+    await staleStore.refreshIndex('project', CWD)
+    expect(staleStore.readIndexSync('project', CWD)).toBeNull()
+    // 文件保留
+    expect((await staleStore.list('project', CWD)).map(r => r.name)).toEqual(['old'])
   })
 })
