@@ -114,7 +114,25 @@ symlink-read protection, malformed-file tolerance, stable index ordering to
 protect KV-prefix caches, and a strict no-custom-session-events policy (they
 make dsh sessions refuse to resume).
 
-**40 tests. 0 runtime deps beyond `yaml`. 15 kB installed.**
+## Measured, not just claimed
+
+A deterministic evaluation layer ([evals/](evals/README.md)) runs in CI —
+no LLM, fully reproducible:
+
+- **Injection budget holds at any scale**: 20/50/100/200 memories → the
+  injected section stays ≤ 4 KB (4065/4048/4018/3940 bytes measured), with
+  truncation markers; empty store injects **0 bytes**.
+- **Eviction never misfires**: four-class mixed scenario — only
+  stale-zero-read memories get hidden; zero files lost; one read revives.
+- **Known limitation, pinned as baseline**: budget truncation is currently
+  positional (index order), not relevance-ranked — probe retention under
+  half-budget pressure drops to ~38%→10% as N grows. Pinned-priority /
+  three-factor ranking is on the roadmap to move these numbers.
+
+This evaluation layer already caught a real bug: the byte budget used to
+exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).
+
+**78 tests (incl. a deterministic eval layer). 0 runtime deps beyond `yaml`. 15 kB installed.**
 
 ## Install
 

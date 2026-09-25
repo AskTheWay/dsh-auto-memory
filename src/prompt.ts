@@ -43,7 +43,10 @@ export function renderMemoryIndexText(store: MemoryStore, config: Config, cwd: s
   if (projectIndex !== null) sections.push(`## Project memories\n\n${projectIndex}`)
   if (sections.length === 0) return ''
   const index = `# Persistent memory index\n\n${sections.join('\n\n')}`
-  const budget = config.maxBytes
+  // 预算语义 = 整段(索引 + 写入指导):先扣除指导文本、截断标记与分隔的余量
+  // (L0 评测 index-budget 抓出的缺陷:旧实现只约束索引,policy 尾巴可使其超预算)
+  const policyBytes = Buffer.byteLength(MEMORY_POLICY_TEXT, 'utf8')
+  const budget = Math.max(1024, config.maxBytes - policyBytes - 96)
   let text: string
   if (Buffer.byteLength(index, 'utf8') <= budget) {
     text = index

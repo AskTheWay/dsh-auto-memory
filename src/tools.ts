@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { MemoryStore } from './store.ts'
 import { normalizeName } from './store.ts'
+import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
 
 /** 解析可选 scope 参数;未指定时返回 undefined(由调用方按查重/配置语义决定)。 */
@@ -158,16 +159,9 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
       if (record === null) throw new Error(`memory not found: ${JSON.stringify(normalizeName(args.name))} — call memory_list to see available names`)
       // 读取计数(best-effort,失败不影响返回)
       void store.touch(record.name, record.scope, cwd).catch(() => {})
-      // 召回展开:解析 body 中的 [[name]] 链接,附一层摘要(不递归)
-      const linkNames = [...record.body.matchAll(/\[\[([a-z0-9]+(?:-[a-z0-9]+)*)\]\]/g)].map(m => m[1])
-      const uniqueLinks = [...new Set(linkNames)]
-        .filter(name => name !== record.name)
-        .slice(0, 3)
-      const linked: { name: string; description: string }[] = []
-      for (const name of uniqueLinks) {
-        const target = await store.findIn(name, availableScopes(), cwd)
-        if (target !== null) linked.push({ name: target.name, description: target.description })
-      }
+      // 召回展开:一层 [[name]] 链接摘要(纯函数见 src/links.ts)
+      const { linked } = await expandLinks(record.body, record.name, name =>
+        store.findIn(name, availableScopes(), cwd))
       return { name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked }
     },
     isConcurrencySafe: () => true,
