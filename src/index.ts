@@ -18,6 +18,7 @@ import { MemoryStore } from './store.ts'
 import { registerMemoryTools } from './tools.ts'
 import { MEMORY_SECTION, renderMemoryIndexText } from './prompt.ts'
 import { registerConsolidation } from './consolidate.ts'
+import { registerMemoryApi } from './memory-api.ts'
 
 export const name = 'dsh-auto-memory'
 export const inject = ['tools', 'systemPrompt']
@@ -58,6 +59,9 @@ export function apply(ctx: Context, config: Config): void {
   const store = new MemoryStore(rootDir, { staleAfterDays: config.staleAfterDays })
 
   registerMemoryTools(ctx, store, config.enableUserScope)
+
+  // P2-2:Web 面板 API(宿主半路由;无 connection 服务的组合自动 no-op)
+  registerMemoryApi(ctx, store, rootDir, { maxBytes: config.maxBytes })
 
   // P1:会话结束自动固化(autoSummarize=false 时 no-op)
   registerConsolidation(ctx, store, {

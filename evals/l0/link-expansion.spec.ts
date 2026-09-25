@@ -32,7 +32,7 @@ describe('link-expansion', () => {
   })
 
   it('自链排除;坏链接(不存在/畸形语法)安全跳过', async () => {
-    const dict = { ...DICT, 'ok-side': { name: 'ok-side', description: 'x' } }
+    const dict: Record<string, { name: string; description: string }> = { ...DICT, 'ok-side': { name: 'ok-side', description: 'x' } }
     const { linked } = await expandLinks('[[self]] [[missing]] [[BAD NAME]] [[ok-side]]', 'self', name => dict[name] ?? null)
     expect(linked.map(l => l.name)).toEqual(['ok-side'])
   })

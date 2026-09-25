@@ -7,7 +7,9 @@
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "erasableSyntaxOnly": true
+    "erasableSyntaxOnly": true,
+    "jsx": "react-jsx",
+    "lib": ["es2024", "dom"]
   },
-  "include": ["src", "tests", "tsdown.config.ts"]
+  "include": ["src", "tests", "evals", "scripts", "tsdown.config.ts"]
 }
