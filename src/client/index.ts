@@ -54,7 +54,9 @@ function memoryFace(ctx: ClientContext): MemoryFace {
     list: async () => {
       const cwd = currentCwd(ctx)
       const query = cwd === undefined ? '' : `?cwd=${encodeURIComponent(cwd)}`
-      return (await fetch(`${BASE}/groups.list${query}`, { headers: { 'cache-control': 'no-store' } })).json() as Promise<{ groups: unknown[]; maxBytes: number }>
+      const response = await fetch(`${BASE}/groups.list${query}`, { headers: { 'cache-control': 'no-store' } })
+      if (!response.ok) throw new Error(`groups.list HTTP ${String(response.status)}`)
+      return (await response.json()) as { groups: unknown[]; maxBytes: number }
     },
     read: async ({ name, scope, cwd }) => {
       const params = new URLSearchParams({ name, scope })
