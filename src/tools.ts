@@ -72,6 +72,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         type: 'string',
         description: 'Optional human-readable heading shown in the index (any language); defaults to name',
       },
+      pinned: {
+        type: 'boolean',
+        description: 'Pin this memory: it sorts first in the index, survives budget truncation, and is never hidden by staleness eviction. Use when the user explicitly says to keep something forever; unpin by passing false',
+      },
       scope: {
         type: 'string', enum: ['project', 'user'],
         description: "project: only this workspace's sessions; user: all sessions of this user. Default: update the layer where this name already exists, else project",
@@ -85,9 +89,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
           name: { type: 'string', required: true },
           operation: { type: 'string', required: true, enum: ['created', 'updated'] },
           scope: { type: 'string', required: true, enum: ['project', 'user'] },
+          pinned: { type: 'boolean', required: true },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope})` }],
+      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})` }],
     },
     async execute(args, exec) {
       const cwd = requireCwd(exec.agent?.session.header.cwd)
@@ -99,12 +104,13 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
       await store.write({
         name,
         title: args.title !== undefined && args.title.trim().length > 0 ? args.title.trim() : undefined,
+        ...(args.pinned !== undefined ? { pinned: args.pinned } : {}),
         description: args.description.trim(),
         type: args.type,
         body: args.body,
       }, scope, cwd)
       const operation: 'created' | 'updated' = existing === null || existing.scope !== scope ? 'created' : 'updated'
-      return { name, operation, scope }
+      return { name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true }
     },
     presentCall: args => ({ card: 'generic', title: `Memory write: ${String(args.name)}`, kind: 'other', rawInput: args }),
   }))
@@ -189,6 +195,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
                 description: { type: 'string', required: true },
                 type: { type: 'string', required: true },
                 scope: { type: 'string', required: true },
+                pinned: { type: 'boolean', required: true },
               },
             },
           },
@@ -198,7 +205,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         type: 'text',
         text: value.memories.length === 0
           ? 'No memories yet.'
-          : value.memories.map(m => `- [${m.name}] (${m.scope}/${m.type}) — ${m.description}`).join('\n'),
+          : value.memories.map(m => `- ${m.name}${m.pinned ? ' 📌' : ''} (${m.scope}/${m.type}) — ${m.description}`).join('\n'),
       }],
     },
     async execute(args, exec) {
@@ -209,7 +216,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         : availableScopes()
       const memories = (await Promise.all(scopes.map(async scope => {
         const records = scope === 'project' ? await store.list(scope, requireCwd(cwd)) : await store.list(scope)
-        return records.map(r => ({ name: r.name, description: r.description, type: r.type, scope: r.scope }))
+        return records.map(r => ({ name: r.name, description: r.description, type: r.type, scope: r.scope, pinned: r.pinned === true }))
       }))).flat()
       return { memories }
     },

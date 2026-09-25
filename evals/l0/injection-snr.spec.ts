@@ -63,4 +63,21 @@ describe('injection-snr', () => {
     expect(retained.length).toBeGreaterThan(0)
     expect(retained.length).toBeLessThanOrEqual(15)
   })
+
+  it('pinned 优先截断(评测驱动迭代闭环):探针置顶后,同预算压力下保留率 ≥ 80%', async () => {
+    // 同一 seed 同一批 60 条;把 15 条探针全部置顶,其余不变
+    const store = new MemoryStore(join(root, 'pinned'))
+    const memories = makeMemories(60, 42, 4).map(m => (m.probe ? { ...m, pinned: true } : m))
+    await seedStore(store, memories, 'project', CWD)
+    const full = renderMemoryIndexText(store, { maxBytes: Number.MAX_SAFE_INTEGER, enableUserScope: false } as never, CWD)
+    const halfBudget = Math.ceil(bytes(full) / 2)
+    const injected = renderMemoryIndexText(store, { maxBytes: halfBudget, enableUserScope: false } as never, CWD)
+    const retained = memories.filter(m => m.probe && injected.includes(`(${m.name}.md)`))
+    // 闭环断言:同一预算下,置顶探针保留率从 baseline(~38%)跃升至 ≥80%
+    expect(retained.length / 15).toBeGreaterThanOrEqual(0.8)
+    // 置顶条目带 📌 标记(模型可见的保护语义)
+    const pinnedLine = injected.split('\n').find(l => l.includes('📌'))
+    expect(pinnedLine).toBeDefined()
+    console.log(`pinned 闭环:同预算下探针保留 ${retained.length}/15(${Math.round((retained.length / 15) * 100)}%)`)
+  })
 })

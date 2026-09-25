@@ -119,7 +119,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -133,6 +133,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       type: parsedType,
       body: fm.body.trim(),
       scope,
+      ...(pinned === true ? { pinned: true } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
       lastReadMs: asMs(lastRead),
@@ -150,6 +151,7 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     ...(record.title !== undefined ? { title: record.title } : {}),
     description: record.description,
     type: record.type,
+    ...(record.pinned === true ? { pinned: true } : {}),
     ...(record.createdMs !== undefined ? { created: record.createdMs } : {}),
     ...(record.updatedMs !== undefined ? { updated: record.updatedMs } : {}),
     ...(record.lastReadMs !== undefined ? { lastRead: record.lastReadMs } : {}),
@@ -180,12 +182,18 @@ export interface LifecycleMeta {
 }
 
 /**
- * 渲染索引正文(一行一条,按 name 排序保证跨 rebuild 稳定——索引文本稳定
- * 才能保住 KV 前缀缓存)。无标题行:标题由注入层统一添加;空列表返回空串。
+ * 渲染索引正文(一行一条)。排序:pinned 优先(组内 name 字典序)——置顶条目排在
+ * 索引最前,注入预算截断(按行保前)因此天然优先保留它们;顺序对 KV 前缀缓存
+ * 保持稳定(仅在 pinned 状态变化时移动)。无标题行;空列表返回空串。
  */
 export function renderIndexBody(records: MemoryRecord[]): string {
-  const ordered = [...records].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-  const lines = ordered.map(r => `- [${r.title ?? r.name}](${r.name}.md) — ${r.description}`)
+  const byName = (a: MemoryRecord, b: MemoryRecord) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  const ordered = [...records].sort((a, b) => {
+    const pa = a.pinned === true ? 0 : 1
+    const pb = b.pinned === true ? 0 : 1
+    return pa !== pb ? pa - pb : byName(a, b)
+  })
+  const lines = ordered.map(r => `- [${r.title ?? r.name}](${r.name}.md)${r.pinned === true ? ' 📌' : ''} — ${r.description}`)
   return lines.length > 0 ? `${lines.join('\n')}\n` : ''
 }
 
@@ -201,6 +209,7 @@ function isSymlink(file: string): boolean {
 /** 判断一条记忆是否"陈旧零引用"(软淘汰候选;纯函数,可测)。 */
 export function isStale(record: MemoryRecord, staleAfterDays: number, nowMs: number): boolean {
   if (staleAfterDays <= 0) return false
+  if (record.pinned === true) return false // 置顶保护:信任锚点,永不软淘汰
   if ((record.reads ?? 0) > 0) return false // 被读过的不淘汰
   const updated = record.updatedMs ?? record.createdMs
   if (updated === undefined) return false // 无生命周期元数据的旧文件不参与
@@ -289,7 +298,9 @@ export class MemoryStore {
         await fsp.readFile(file, 'utf8').catch(() => ''),
         scope,
       )
-      written = { ...record, ...mergeLifecycleMeta(existing, Date.now()), scope }
+      // pinned 语义:显式 true/false 设置/取消;未提及时继承现状(与 created 同类)
+      const pinned = record.pinned ?? existing?.pinned
+      written = { ...record, ...(pinned === true ? { pinned: true } : {}), ...mergeLifecycleMeta(existing, Date.now()), scope }
       await writeFileAtomic(file, serializeMemory(written), { mode: 0o600, dirMode: 0o700 })
       await this.rebuildIndex(scope, cwd)
     })

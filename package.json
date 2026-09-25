@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-memory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Claude Code style auto-memory plugin for DeepSeek Harness: typed memory files + MEMORY.md index auto-injected into the system prompt",
   "type": "module",
   "license": "MIT",

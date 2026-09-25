@@ -23,6 +23,20 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
+## What's new in 0.3.0 (P2)
+
+- **Pinned memories** (`pinned: true` on memory_write): pinned entries lead
+  the index, survive budget truncation, and are exempt from staleness
+  eviction — a trust anchor the user controls.
+- **Eval-driven fix**: the injection budget now covers the *whole* section
+  (index + guidance); it used to overshoot by ~800 bytes. Caught by the new
+  deterministic evaluation layer on its first run.
+- **Deterministic eval layer** ([evals/](evals/README.md)) in CI: injection
+  budget curves, eviction zero-misfire, link-expansion bounds, and a
+  signal-to-noise characterization — which pinned-priority truncation then
+  improved from **38% → ≥80% probe retention** under half-budget pressure.
+  Same budget, better memories.
+
 ## What's new in 0.2.0 (P1)
 
 - **Auto-consolidation** (`autoSummarize: true`): when a root session ends, a
@@ -126,8 +140,9 @@ no LLM, fully reproducible:
   stale-zero-read memories get hidden; zero files lost; one read revives.
 - **Known limitation, pinned as baseline**: budget truncation is currently
   positional (index order), not relevance-ranked — probe retention under
-  half-budget pressure drops to ~38%→10% as N grows. Pinned-priority /
-  three-factor ranking is on the roadmap to move these numbers.
+  half-budget pressure drops to ~38%→10% as N grows. **Pinning fixes it for
+  what matters**: pinned probes retain **≥80%** at the same budget (0.3.0);
+  full relevance ranking remains on the roadmap.
 
 This evaluation layer already caught a real bug: the byte budget used to
 exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).

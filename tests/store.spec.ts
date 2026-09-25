@@ -281,6 +281,24 @@ describe('P1:生命周期元数据与遗忘', () => {
     expect(store.readIndexSync('project', CWD)).toBeNull()
   })
 
+  it('pinned:置顶豁免软淘汰、排在索引最前、更新未提及则继承', async () => {
+    // ① isStale 豁免
+    expect(isStale({ name: 'a', description: 'd', type: 'user', body: 'b', scope: 'project', pinned: true, updatedMs: 1, reads: 0 }, 1, 100 * 86_400_000)).toBe(false)
+    // ② 排序最前 + 📌 标记
+    await store.write({ name: 'z-pinned', description: '置顶', type: 'user', body: 'x', pinned: true }, 'project', CWD)
+    await store.write({ name: 'a-normal', description: '普通', type: 'user', body: 'x' }, 'project', CWD)
+    const index = store.readIndexSync('project', CWD) ?? ''
+    const lines = index.split('\n').filter(l => l.startsWith('- '))
+    expect(lines[0]).toContain('z-pinned')
+    expect(lines[0]).toContain('📌')
+    expect(lines[1]).toContain('a-normal')
+    // ③ 更新未提 pinned → 继承 true;显式 false → 取消
+    await store.write({ name: 'z-pinned', description: '更新内容', type: 'user', body: 'y' }, 'project', CWD)
+    expect((await store.read('z-pinned', 'project', CWD))?.pinned).toBe(true)
+    await store.write({ name: 'z-pinned', description: '取消置顶', type: 'user', body: 'z', pinned: false }, 'project', CWD)
+    expect((await store.read('z-pinned', 'project', CWD))?.pinned).toBeUndefined()
+  })
+
   it('clear 与并发 write 单锁串行:终态一致,无中间快照逃逸(审查 major 回归)', async () => {
     for (const name of ['a', 'b', 'c']) {
       await store.write({ name, description: 'd', type: 'user', body: 'x' }, 'project', CWD)
