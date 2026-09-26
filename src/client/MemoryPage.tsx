@@ -44,6 +44,16 @@ const GROUP_STYLE: React.CSSProperties = { margin: '16px 0', padding: '12px', bo
 const BAR_STYLE: React.CSSProperties = { height: '6px', borderRadius: '3px', background: 'rgba(128,128,128,.3)', overflow: 'hidden', margin: '6px 0' }
 const ROW_STYLE: React.CSSProperties = { display: 'flex', gap: '8px', alignItems: 'baseline', padding: '6px 0', borderBottom: '1px solid rgba(128,128,128,.15)' }
 
+/** 悬浮编辑器容器:官方主题变量(--dsw-alias-*)+ 半透明灰回退,深浅主题均可读。 */
+const EDITOR_STYLE: React.CSSProperties = {
+  ...GROUP_STYLE,
+  position: 'sticky',
+  bottom: '12px',
+  background: 'var(--dsw-alias-bg-overlay, rgba(127,127,127,0.65))',
+  backdropFilter: 'blur(6px)',
+  color: 'var(--dsw-alias-label-primary, inherit)',
+}
+
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
 export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
@@ -173,7 +183,7 @@ function MemoryEditor({ t, initial, initialBody, onSave, onCancel }: {
   const [description, setDescription] = useState(initial.description)
   const [body, setBody] = useState(initialBody)
   return (
-    <div style={{ ...GROUP_STYLE, position: 'sticky', bottom: '12px', background: 'var(--dsh-bg, #fff)' }}>
+    <div style={EDITOR_STYLE}>
       <h3 style={{ margin: 0 }}>{t('edit')}: <code>{initial.name}</code></h3>
       <p style={{ margin: '8px 0' }}>
         {t('titleField')}:{' '}
