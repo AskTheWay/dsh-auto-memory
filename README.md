@@ -21,6 +21,8 @@ Say *"Remember: I'm a Python backend engineer preparing for interviews"* today â
 open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 **remembers**.
 
+![Memory management panel in the dsh Web UI](imgs/img-1.png)
+
 ---
 
 ## What's new in 0.3.0 (P2)

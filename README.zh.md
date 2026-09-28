@@ -20,6 +20,8 @@ dsh plugin --profile demo add dsh-auto-memory
 今天对它说 *"记住:我是准备面试的 Python 后端工程师"*——
 明天开一个全新会话,问 *"你对我有什么了解?"*,它**记得**。
 
+![dsh Web UI 中的记忆管理面板](imgs/img-1-zh.png)
+
 ---
 
 ## 0.3.0 新增(P2)
