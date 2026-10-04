@@ -25,6 +25,20 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
+## What's new in 0.4.0 (P2)
+
+- **Web UI memory panel** (the screenshot above): a dual-half plugin — the host
+  registers authenticated `/api/auto-memory/*` routes over the existing locked
+  store, the browser half registers a sidebar entry and a management page
+  (grouped list with types/pins/read counts, per-scope capacity bars with
+  budget warnings, inline editing, pin toggle, delete-with-confirm). Works in
+  Web and desktop clients from one bundle; non-Web compositions stay no-op.
+- Panel bugfixes: routes now register via a connection-ready callback (host
+  load order used to skip them), and the editor uses official theme variables
+  (`--dsw-alias-*`) instead of a hardcoded white — readable in dark mode.
+- Package hygiene: the browser half ships as `lib/client.js` (17 kB) behind a
+  `dsh.client` manifest; total install stays ~32 kB with zero runtime deps.
+
 ## What's new in 0.3.0 (P2)
 
 - **Pinned memories** (`pinned: true` on memory_write): pinned entries lead

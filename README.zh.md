@@ -24,6 +24,17 @@ dsh plugin --profile demo add dsh-auto-memory
 
 ---
 
+## 0.4.0 新增(P2)
+
+- **Web UI 记忆面板**(上方截图):双半插件——宿主半在认证围栏内注册
+  `/api/auto-memory/*` 路由(复用带锁 store),浏览器半注册侧栏入口与管理页
+  (按作用域分组的列表,含类型/置顶/读取计数;容量条与预算预警;行内编辑、
+  置顶切换、确认删除)。一套 bundle 同时服务 Web 与桌面端;非 Web 组合自动 no-op。
+- 面板修复:路由改经 connection 就绪回调注册(此前被宿主加载顺序跳过);
+  编辑器改用官方主题变量(`--dsw-alias-*`)——深色模式可读。
+- 包卫生:浏览器半以 `lib/client.js`(17 kB)随 `dsh.client` manifest 分发;
+  总安装体积约 32 kB,运行时零依赖。
+
 ## 0.3.0 新增(P2)
 
 - **置顶记忆**(memory_write 传 `pinned: true`):置顶条目排在索引最前、

@@ -1,0 +1,39 @@
+name: Publish
+
+# CD:推送 v* 标签自动构建、测试、发布到 npm 官方源。
+# 需要 Repository Secret:NPM_TOKEN(granular token,Packages 读写,
+# 仅限 dsh-auto-memory 包;创建入口 npmjs.com → Access Tokens → Generate
+# New Token → Granular Access Token)。2FA 账号须用带 publish 权限的
+# granular token(自动化发布不能交互输 OTP)。
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm --provenance 出处签名
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Install (dev deps + auto-installed peers)
+        run: npm install
+      - name: Type check (strict)
+        run: npx tsc --noEmit
+      - name: Tests
+        run: npm test
+      - name: Build (host + client halves)
+        run: npm run build
+      - name: Smoke-load the built entries
+        run: |
+          node -e "import('./lib/index.js').then(m => { if (!m.apply || !m.inject) throw new Error('bad host entry'); console.log('host entry ok') })"
+          node -e "const fs=require('fs'); const s=fs.readFileSync('lib/client.js','utf8'); if (!s.includes('window.__ModuleLoader__.load')) throw new Error('bad client bundle'); console.log('client bundle ok')"
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
