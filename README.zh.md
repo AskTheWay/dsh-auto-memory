@@ -24,6 +24,19 @@ dsh plugin --profile demo add dsh-auto-memory
 
 ---
 
+## 0.5.0 新增(P2)
+
+- **三因子排序**(Generative Agents 公式的免 embedding 版):注入索引与
+  memory_list 按 置顶 → importance×recency(0.995^天,天粒度保证当日文本
+  稳定、不破坏 KV 前缀缓存)排序;自动固化时模型为每条记忆打 1-10 重要度,
+  类型自带缺省。
+- **安全包**:所有写入路径统一过脱敏([REDACTED:github-token/npm-token/
+  openai-key/aws-key/手机号/身份证]——正是本项目历史里真实泄漏过的形态)
+  与协议标签转义——注入段包 <memory_context> 壳,内容无法伪造壳;固化按
+  描述相似度(Jaccard ≥ 0.7)去重,不再堆积回声。
+- 评测叙事闭环:半量预算压力下探针保留率 38%(位置式)→ 80%(置顶)
+  → **≥90%(三因子,未置顶)**——同预算同 seed,更对的记忆。
+
 ## 0.4.0 新增(P2)
 
 - **Web UI 记忆面板**(上方截图):双半插件——宿主半在认证围栏内注册

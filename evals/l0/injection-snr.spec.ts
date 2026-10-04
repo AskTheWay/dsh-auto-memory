@@ -64,6 +64,20 @@ describe('injection-snr', () => {
     expect(retained.length).toBeLessThanOrEqual(15)
   })
 
+  it('三因子排序(评测三部曲 80→95):高 importance 探针不置顶也浮前,同预算保留率 ≥90%', async () => {
+    // 同 seed 同批 60 条;15 条探针不 pin,但 importance 全部 9(固化模型对"身份/偏好"类打高分)
+    const store = new MemoryStore(join(root, 'three-factor'))
+    const memories = makeMemories(60, 42, 4).map(m => (m.probe ? { ...m, importance: 9 } : m))
+    await seedStore(store, memories, 'project', CWD)
+    const full = renderMemoryIndexText(store, { maxBytes: Number.MAX_SAFE_INTEGER, enableUserScope: false } as never, CWD)
+    const halfBudget = Math.ceil(bytes(full) / 2)
+    const injected = renderMemoryIndexText(store, { maxBytes: halfBudget, enableUserScope: false } as never, CWD)
+    const retained = memories.filter(m => m.probe && injected.includes(`(${m.name}.md)`))
+    // 三因子闭环断言:importance 排序把未置顶探针顶到预算内(对照 pinned 场景的 ≥80%)
+    expect(retained.length / 15).toBeGreaterThanOrEqual(0.9)
+    console.log(`三因子闭环:同预算下未置顶探针保留 ${retained.length}/15(${Math.round((retained.length / 15) * 100)}%)`)
+  })
+
   it('pinned 优先截断(评测驱动迭代闭环):探针置顶后,同预算压力下保留率 ≥ 80%', async () => {
     // 同一 seed 同一批 60 条;把 15 条探针全部置顶,其余不变
     const store = new MemoryStore(join(root, 'pinned'))

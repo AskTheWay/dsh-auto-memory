@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { MemoryStore } from './store.ts'
-import { normalizeName } from './store.ts'
+import { normalizeName, memoryScore, DEFAULT_IMPORTANCE } from './store.ts'
 import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
 
@@ -26,8 +26,9 @@ function parseExplicitScope(raw: string | undefined): MemoryScope | undefined {
   throw new Error(`invalid scope: ${JSON.stringify(raw)} (expected 'project' or 'user')`)
 }
 
-/** 注册四个记忆工具。 */
-export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUserScope: boolean): void {  /** 当前部署可访问的作用域(user 层被配置禁用时从一切路径剔除)。 */
+/** 注册记忆工具。 */
+export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUserScope: boolean): void {
+  /** 当前部署可访问的作用域(user 层被配置禁用时从一切路径剔除)。 */
   const availableScopes = (): readonly MemoryScope[] => enableUserScope ? ['user', 'project'] : ['project']
 
   const guardScope = (scope: MemoryScope): MemoryScope => {
@@ -196,6 +197,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
                 type: { type: 'string', required: true },
                 scope: { type: 'string', required: true },
                 pinned: { type: 'boolean', required: true },
+                importance: { type: 'integer', required: true },
               },
             },
           },
@@ -216,7 +218,18 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         : availableScopes()
       const memories = (await Promise.all(scopes.map(async scope => {
         const records = scope === 'project' ? await store.list(scope, requireCwd(cwd)) : await store.list(scope)
-        return records.map(r => ({ name: r.name, description: r.description, type: r.type, scope: r.scope, pinned: r.pinned === true }))
+        // 三因子排序(与注入索引一致):pinned → importance×recency → name
+        const now = Date.now()
+        return [...records]
+          .sort((a, b) => {
+            const pa = a.pinned === true ? 0 : 1
+            const pb = b.pinned === true ? 0 : 1
+            if (pa !== pb) return pa - pb
+            const sa = memoryScore(a, now)
+            const sb = memoryScore(b, now)
+            return sa !== sb ? sb - sa : a.name < b.name ? -1 : 1
+          })
+          .map(r => ({ name: r.name, description: r.description, type: r.type, scope: r.scope, pinned: r.pinned === true, importance: r.importance ?? DEFAULT_IMPORTANCE[r.type] }))
       }))).flat()
       return { memories }
     },

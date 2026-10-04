@@ -26,6 +26,8 @@ export interface MemoryRecord {
   scope: MemoryScope
   /** 置顶保护(P2-3):软淘汰永不隐藏;索引渲染排在最前,预算截断天然优先保留。 */
   pinned?: boolean
+  /** 重要度 1-10(三因子排序用;固化时 LLM 显式打分,缺省按类型映射)。 */
+  importance?: number
   /** 生命周期元数据(P1 遗忘策略用;旧文件缺省时由解析层补全)。 */
   createdMs?: number
   updatedMs?: number

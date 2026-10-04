@@ -32,6 +32,8 @@ export interface SynthMemory {
   probe?: boolean
   /** 置顶(pinned 优先截断评测用)。 */
   pinned?: boolean
+  /** 重要度 1-10(三因子排序评测用)。 */
+  importance?: number
 }
 
 const TOPICS_ZH = ['数据库连接池', '日志规范', '鉴权中间件', '索引优化', '部署流水线', '依赖升级', '缓存策略', '接口限流', '测试覆盖', '配置管理']
@@ -71,7 +73,7 @@ export async function seedStore(store: MemoryStore, memories: SynthMemory[], sco
   for (const m of memories) {
     await fsp.writeFile(
       join(dir, `${m.name}.md`),
-      serializeMemory({ name: m.name, title: m.title, description: m.description, type: m.type, body: m.body, ...(m.pinned === true ? { pinned: true } : {}), createdMs: now, updatedMs: now }),
+      serializeMemory({ name: m.name, title: m.title, description: m.description, type: m.type, body: m.body, ...(m.pinned === true ? { pinned: true } : {}), ...(m.importance !== undefined ? { importance: m.importance } : {}), createdMs: now, updatedMs: now }),
       'utf8',
     )
   }

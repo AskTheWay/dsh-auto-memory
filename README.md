@@ -25,6 +25,23 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
+## What's new in 0.5.0 (P2)
+
+- **Three-factor ranking** (Generative Agents formula, embedding-free):
+  injection index and memory_list now order by pin → importance × recency
+  (0.995^days, day-granular so the index text stays stable within a day for
+  KV-prefix caches). Auto-consolidation has the model assign importance 1-10;
+  types carry sensible defaults.
+- **Security pack**: every write path now passes through redaction
+  ([REDACTED:github-token/npm-token/openai-key/aws-key/phone/id-card] — the
+  exact shapes that leaked in this project's own history) and protocol-tag
+  escaping — the injected section is wrapped in <memory_context> and content
+  can no longer forge the wrapper. Consolidation dedupes near-identical
+  descriptions (Jaccard ≥ 0.7) instead of piling up echoes.
+- Eval arc completes: probe retention under half-budget pressure is now
+  **38% (positional) → 80% (pinned) → ≥90% (three-factor, unpinned)** — same
+  budget, same seed, better memories.
+
 ## What's new in 0.4.0 (P2)
 
 - **Web UI memory panel** (the screenshot above): a dual-half plugin — the host

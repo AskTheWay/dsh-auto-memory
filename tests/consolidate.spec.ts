@@ -82,6 +82,13 @@ describe('sanitizeCandidate', () => {
     expect(out?.description.length).toBe(160)
     expect(out?.body.length).toBe(2000)
   })
+  it('importance:1-10 整数 clamp;非法值丢弃字段回退类型缺省', () => {
+    expect(sanitizeCandidate({ name: 'a', description: 'd', body: 'b', importance: 9 }, true)?.importance).toBe(9)
+    expect(sanitizeCandidate({ name: 'a', description: 'd', body: 'b', importance: 99 }, true)?.importance).toBe(10)
+    expect(sanitizeCandidate({ name: 'a', description: 'd', body: 'b', importance: 0 }, true)?.importance).toBe(1)
+    expect(sanitizeCandidate({ name: 'a', description: 'd', body: 'b', importance: 'high' }, true)?.importance).toBeUndefined()
+  })
+
   it('缺 description 或 body 丢弃', () => {
     expect(sanitizeCandidate({ name: 'a', body: 'b' }, true)).toBeNull()
     expect(sanitizeCandidate({ name: 'a', description: 'd' }, true)).toBeNull()

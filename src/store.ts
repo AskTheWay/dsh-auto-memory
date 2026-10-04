@@ -119,13 +119,15 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
     const asCount = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+    const asImportance = (value: unknown): number | undefined =>
+      typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 10 ? value : undefined
     return {
       name: normalizeName(name),
       title: typeof title === 'string' && title.trim().length > 0 ? title.trim() : undefined,
@@ -134,6 +136,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       body: fm.body.trim(),
       scope,
       ...(pinned === true ? { pinned: true } : {}),
+      ...(asImportance(importance) !== undefined ? { importance: asImportance(importance) } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
       lastReadMs: asMs(lastRead),
@@ -152,6 +155,7 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     description: record.description,
     type: record.type,
     ...(record.pinned === true ? { pinned: true } : {}),
+    ...(record.importance !== undefined ? { importance: record.importance } : {}),
     ...(record.createdMs !== undefined ? { created: record.createdMs } : {}),
     ...(record.updatedMs !== undefined ? { updated: record.updatedMs } : {}),
     ...(record.lastReadMs !== undefined ? { lastRead: record.lastReadMs } : {}),
@@ -182,16 +186,19 @@ export interface LifecycleMeta {
 }
 
 /**
- * 渲染索引正文(一行一条)。排序:pinned 优先(组内 name 字典序)——置顶条目排在
- * 索引最前,注入预算截断(按行保前)因此天然优先保留它们;顺序对 KV 前缀缓存
- * 保持稳定(仅在 pinned 状态变化时移动)。无标题行;空列表返回空串。
+ * 渲染索引正文(一行一条)。排序:pinned 优先 → 三因子分(importance×recency,
+ * 天粒度衰减保证当日稳定,不破坏 KV 前缀缓存)→ name 字典序稳定 tiebreak。
  */
 export function renderIndexBody(records: MemoryRecord[]): string {
-  const byName = (a: MemoryRecord, b: MemoryRecord) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  const now = Date.now()
   const ordered = [...records].sort((a, b) => {
     const pa = a.pinned === true ? 0 : 1
     const pb = b.pinned === true ? 0 : 1
-    return pa !== pb ? pa - pb : byName(a, b)
+    if (pa !== pb) return pa - pb
+    const sa = memoryScore(a, now)
+    const sb = memoryScore(b, now)
+    if (sa !== sb) return sb - sa
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
   })
   const lines = ordered.map(r => `- [${r.title ?? r.name}](${r.name}.md)${r.pinned === true ? ' 📌' : ''} — ${r.description}`)
   return lines.length > 0 ? `${lines.join('\n')}\n` : ''
@@ -214,6 +221,80 @@ export function isStale(record: MemoryRecord, staleAfterDays: number, nowMs: num
   const updated = record.updatedMs ?? record.createdMs
   if (updated === undefined) return false // 无生命周期元数据的旧文件不参与
   return nowMs - updated > staleAfterDays * 86_400_000
+}
+
+// ---------- P0.5 安全包:写入脱敏与协议标签防护 ----------
+
+/** 高置信密钥/敏感串模式(曾在本项目亲历泄漏形态:ghp_/npm_/sk-)。 */
+const SECRET_PATTERNS: readonly { kind: string; re: RegExp }[] = [
+  { kind: 'aws-key', re: /\bAKIA[0-9A-Z]{16}\b/g },
+  { kind: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g },
+  { kind: 'npm-token', re: /\bnpm_[A-Za-z0-9]{20,}\b/g },
+  { kind: 'openai-key', re: /\bsk-[A-Za-z0-9_\-]{20,}\b/g },
+  { kind: 'bearer', re: /\bBearer\s+[A-Za-z0-9_\-.=/+]{20,}\b/g },
+  { kind: 'phone', re: /\b1[3-9]\d{9}\b/g },
+  { kind: 'id-card', re: /\b\d{17}[\dXx]\b/g },
+]
+
+/**
+ * 写入前脱敏(纯函数,可测):把高置信密钥/手机号/身份证替换为 [REDACTED:kind]。
+ * 应用于 description 与 body——所有写路径(工具/固化/面板)都经 store.write,单点拦截。
+ */
+export function redactSecrets(text: string): string {
+  let out = text
+  for (const { kind, re } of SECRET_PATTERNS) out = out.replace(re, `[REDACTED:${kind}]`)
+  return out
+}
+
+/**
+ * 入库前剥离注入协议标签字样(防闭合逃逸伪造):任何文本中的 <memory_context>
+ * 开闭标签转义为 &lt;…&gt;,使注入段永远是"一层壳",无法被内容嵌套穿透。
+ */
+export function stripMemoryTags(text: string): string {
+  return text
+    .replace(/<\/?memory_context>/g, match => match.replace(/[<>]/g, ch => (ch === '<' ? '&lt;' : '&gt;')))
+}
+
+/** 写入内容统一清洗(脱敏 + 协议标签防护)。 */
+function sanitizeContent(text: string): string {
+  return stripMemoryTags(redactSecrets(text))
+}
+
+// ---------- P0.5 三因子排序(Generative Agents 公式的免 embedding 版) ----------
+
+/** 各类型缺省重要度(1-10;固化时 LLM 可显式覆盖)。 */
+export const DEFAULT_IMPORTANCE: Readonly<Record<MemoryType, number>> = {
+  feedback: 8,
+  user: 7,
+  project: 6,
+  reference: 4,
+}
+
+/**
+ * 三因子评分(纯函数):importance × recency(0.995^天,天粒度取整保证当日稳定,
+ * 不破坏 KV 前缀缓存)。relevance 需查询上下文,仅用于读取场景,不进注入排序。
+ */
+export function memoryScore(record: MemoryRecord, nowMs: number): number {
+  const importance = record.importance ?? DEFAULT_IMPORTANCE[record.type]
+  const anchor = record.lastReadMs ?? record.updatedMs ?? record.createdMs
+  if (anchor === undefined) return importance // 无时间锚的旧文件:只看重要度
+  const days = Math.max(0, Math.floor((nowMs - anchor) / 86_400_000))
+  return importance * Math.pow(0.995, days)
+}
+
+/**
+ * 描述相似度(Jaccard 词集,纯函数,可测):固化防回声的查重依据——
+ * "既有记忆的复述不是新信息",相似度过高的候选跳过而非堆积。
+ */
+export function descriptionSimilarity(a: string, b: string): number {
+  const words = (text: string): Set<string> =>
+    new Set(text.toLowerCase().split(/[^a-z0-9一-鿿]+/).filter(w => w.length > 0))
+  const wa = words(a)
+  const wb = words(b)
+  if (wa.size === 0 || wb.size === 0) return 0
+  let intersection = 0
+  for (const word of wa) if (wb.has(word)) intersection += 1
+  return intersection / (wa.size + wb.size - intersection)
 }
 
 /**
@@ -300,7 +381,15 @@ export class MemoryStore {
       )
       // pinned 语义:显式 true/false 设置/取消;未提及时继承现状(与 created 同类)
       const pinned = record.pinned ?? existing?.pinned
-      written = { ...record, ...(pinned === true ? { pinned: true } : {}), ...mergeLifecycleMeta(existing, Date.now()), scope }
+      // 安全包:所有写入路径统一过脱敏 + 协议标签防护(单点拦截)
+      written = {
+        ...record,
+        ...(pinned === true ? { pinned: true } : {}),
+        description: sanitizeContent(record.description),
+        body: sanitizeContent(record.body),
+        ...mergeLifecycleMeta(existing, Date.now()),
+        scope,
+      }
       await writeFileAtomic(file, serializeMemory(written), { mode: 0o600, dirMode: 0o700 })
       await this.rebuildIndex(scope, cwd)
     })

@@ -26,7 +26,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { MemoryStore } from './store.ts'
-import { normalizeName, asMemoryType } from './store.ts'
+import { normalizeName, asMemoryType, descriptionSimilarity } from './store.ts'
 import type { MemoryScope, MemoryType } from './types.ts'
 
 // dsh-subagent 在 AgentOptions 上声明的字段(此处同样声明合并,不引入对
@@ -54,6 +54,7 @@ export interface RawCandidate {
   type?: unknown
   body?: unknown
   scope?: unknown
+  importance?: unknown
 }
 
 /** sanitize 后的可写候选。 */
@@ -64,6 +65,8 @@ export interface SanitizedCandidate {
   type: MemoryType
   body: string
   scope: MemoryScope
+  /** 重要度 1-10(固化模型显式打分;非法或缺省时回退类型缺省,由 store 兜底)。 */
+  importance?: number
 }
 
 // ---------- 纯函数(可测) ----------
@@ -123,7 +126,9 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean): 
     if (description.length === 0 || body.length === 0) return null
     const type = asMemoryType(String(raw.type ?? 'reference'))
     const scope: MemoryScope = raw.scope === 'user' ? (enableUserScope ? 'user' : 'project') : 'project'
-    return { name, title, description, type, body, scope }
+    const importance = typeof raw.importance === 'number' && Number.isSafeInteger(raw.importance)
+      ? Math.min(10, Math.max(1, raw.importance)) : undefined
+    return { name, title, description, type, body, scope, ...(importance !== undefined ? { importance } : {}) }
   } catch {
     return null
   }
@@ -143,9 +148,11 @@ sessions for this user, following these rules:
   AGENTS.md, session-specific context.
 - Existing memories (do not duplicate them): ${known}
 - Output AT MOST ${maxMemories} items. If nothing is worth persisting, output [].
+- "importance" is 1-10: 8-10 = identity/durable preferences, 5-7 = project facts
+  worth keeping, 1-4 = marginal references. Be conservative, not everything is 9.
 
 Return ONLY a JSON array, each element exactly:
-{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project"}
+{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5}
 Use scope "user" only for user-global preferences; default "project".
 
 <transcript>
@@ -250,8 +257,12 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           if (written >= options.autoSummarizeMaxMemories) break
           const candidate = sanitizeCandidate(raw, options.enableUserScope)
           if (candidate === null) continue
-          // 查重:任何作用域已有同名 → 跳过(自动更新有风险,保守起见只新增)
-          if (await store.findIn(candidate.name, options.enableUserScope ? ['user', 'project'] : ['project'], cwd) !== null) continue
+          const existingAll = await store.listAll(cwd)
+          // 查重(防回声):同名跳过;或与任何现有描述的词面相似度 ≥0.7 视为复述跳过
+          if (existingAll.some(existing =>
+            existing.name === candidate.name
+            || descriptionSimilarity(existing.description, candidate.description) >= 0.7,
+          )) continue
           await store.write(candidate, candidate.scope, cwd)
           written += 1
         }
