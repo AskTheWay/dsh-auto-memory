@@ -52,20 +52,23 @@ const BASE = '/api/auto-memory'
 /** 列出一个目录组(读文件,畸形/符号链接跳过——与 store.list 同纪律)。 */
 async function readGroup(dir: string, scope: MemoryScope, slug: string): Promise<PanelGroup> {
   const group: PanelGroup = { key: slug, scope, slug, memories: [], indexBytes: 0, indexText: null }
-  let entries: string[]
+  let entries
   try {
-    entries = await fsp.readdir(dir)
+    // withFileTypes + isFile:与 store.list 同纪律排除 symlink/目录(审查确认
+    // 旧实现可把 memoryDir 外的 symlink 内容读进面板)
+    entries = await fsp.readdir(dir, { withFileTypes: true })
   } catch {
     return group
   }
   for (const entry of entries) {
-    if (!entry.endsWith('.md')) continue
-    const file = join(dir, entry)
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+    const file = join(dir, entry.name)
     const raw = await fsp.readFile(file, 'utf8').catch(() => null)
     if (raw === null) continue
-    if (entry.toLowerCase() === INDEX_FILENAME.toLowerCase()) {
+    if (entry.name.toLowerCase() === INDEX_FILENAME.toLowerCase()) {
       group.indexBytes = Buffer.byteLength(raw, 'utf8')
-      group.indexText = raw.trim().length > 0 ? raw : null
+      // 面板预览截断:超大索引不应把数倍体积的 JSON 推给浏览器(审查确认)
+      group.indexText = raw.length > 0 ? raw.slice(0, 8192) : null
       continue
     }
     const record = parseMemory(raw, scope)
@@ -158,14 +161,22 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
         if (body.scope === 'project' && (cwd === undefined || cwd.length === 0)) {
           return json({ error: 'project scope requires cwd' }, 400)
         }
-        const name = normalizeName(body.name) // 抛错即 400,模型与面板同一条归一化路径
+        // 入参校验(与工具/固化路径对齐——审查确认面板路由曾"裸奔":非法 type
+        // 或空 description 落盘后 parseMemory 拒收,文件成不可见不可删的幽灵)
+        const name = normalizeName(body.name)
+        if (typeof body.description !== 'string' || body.description.trim().length === 0) {
+          return json({ error: 'description must be a non-empty string' }, 400)
+        }
+        if (body.type !== 'user' && body.type !== 'feedback' && body.type !== 'project' && body.type !== 'reference') {
+          return json({ error: 'invalid type' }, 400)
+        }
         await store.write({
           name,
-          ...(body.title !== undefined && body.title.trim().length > 0 ? { title: body.title.trim() } : {}),
+          title: typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim().slice(0, 80) : undefined,
           ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
-          description: body.description,
+          description: body.description.trim().slice(0, 160),
           type: body.type,
-          body: body.body,
+          body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',
         }, body.scope, cwd)
         return json({ ok: true, name })
       } catch (error) {

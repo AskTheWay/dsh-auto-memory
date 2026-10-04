@@ -33,6 +33,8 @@ interface PanelGroup {
   current?: boolean
   memories: PanelMemory[]
   indexBytes: number
+  /** 该组当前索引全文(= 下一次会话注入的索引部分)。 */
+  indexText?: string | null
 }
 
 type Translate = (key: PluginMemoryLocaleKey, params?: Record<string, string | number>) => string
@@ -88,10 +90,15 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
 
   const cwd = (group: PanelGroup): string | undefined => (group.scope === 'project' && group.current === true ? currentCwd() : undefined)
 
-  /** 打开编辑器:先拉取正文(列表响应不含 body)。 */
+  /** 打开编辑器:先拉取正文(列表响应不含 body);失败中止,绝不以空正文打开。 */
   const openEditor = async (group: PanelGroup, memory: PanelMemory): Promise<void> => {
-    const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
-    setEditing({ group, memory, body: 'body' in detail ? detail.body : '' })
+    try {
+      const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
+      setEditing({ group, memory, body: detail.body })
+    } catch (error) {
+      console.warn('[auto-memory] read failed, editor aborted', error)
+      await load()
+    }
   }
 
   if (error) {
@@ -124,6 +131,12 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
             <div style={BAR_STYLE}>
               <div style={{ width: `${Math.min(100, usage * 100)}%`, height: '100%', background: hot ? '#d97706' : 'rgba(96,165,250,.9)' }} />
             </div>
+            {group.indexText != null && (
+              <details style={{ margin: '6px 0' }}>
+                <summary style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.8 }}>{t('injectedPreview')}</summary>
+                <pre style={{ margin: '6px 0 0', padding: '8px', background: 'rgba(127,127,127,0.12)', borderRadius: '6px', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{group.indexText}</pre>
+              </details>
+            )}
             {group.memories.map(memory => (
               <div key={memory.name} style={ROW_STYLE}>
                 <span style={{ minWidth: 0, flex: 1 }}>
@@ -137,11 +150,16 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
                 <span style={{ whiteSpace: 'nowrap' }}>
                   <button disabled={busy} onClick={() => { void openEditor(group, memory) }}>{t('edit')}</button>{' '}
                   <button disabled={busy} onClick={() => {
-                    // 置顶切换必须先取正文再整条重写(列表响应不含 body,直接写会清空正文)
+                    // 置顶切换必须先取正文再整条重写;读取失败直接中止——
+                    // 旧实现失败时以空 body 写入会清空正文(审查确认的 major)
                     void (async () => {
-                      const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
-                      const bodyText = 'body' in detail ? detail.body : ''
-                      await act(() => write({ cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title, description: memory.description, type: memory.type, body: bodyText, pinned: !memory.pinned }))
+                      try {
+                        const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
+                        await act(() => write({ cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title, description: memory.description, type: memory.type, body: detail.body, pinned: !memory.pinned }))
+                      } catch (error) {
+                        console.warn('[auto-memory] read failed, pin aborted', error)
+                        await load()
+                      }
                     })()
                   }}>
                     {memory.pinned ? t('unpinAction') : t('pinAction')}

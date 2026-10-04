@@ -199,9 +199,13 @@ Override in your profile's `cordis.patch.yml` (config replaces wholesale):
 ```yaml
 - id: auto-memory
   config:
-    maxBytes: 4096          # injection budget
+    maxBytes: 4096          # injection budget (index + guidance + wrapper)
     memoryDir: D:/memories  # default: $DSH_HOME/memory
     enableUserScope: true   # false: user layer off on every path
+    autoSummarize: false         # true: on root-session end, a background LLM files durable new facts
+    autoSummarizeMaxMemories: 5  # cap per consolidation
+    autoSummarizeMaxTokens: 2048 # consolidation output cap
+    staleAfterDays: 0            # >0: soft-hide zero-read memories older than N days (files kept)
 ```
 
 ## How it works (60 seconds)

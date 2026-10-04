@@ -228,10 +228,14 @@ export function isStale(record: MemoryRecord, staleAfterDays: number, nowMs: num
 /** 高置信密钥/敏感串模式(曾在本项目亲历泄漏形态:ghp_/npm_/sk-)。 */
 const SECRET_PATTERNS: readonly { kind: string; re: RegExp }[] = [
   { kind: 'aws-key', re: /\bAKIA[0-9A-Z]{16}\b/g },
-  { kind: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g },
+  { kind: 'github-token', re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
   { kind: 'npm-token', re: /\bnpm_[A-Za-z0-9]{20,}\b/g },
-  { kind: 'openai-key', re: /\bsk-[A-Za-z0-9_\-]{20,}\b/g },
-  { kind: 'bearer', re: /\bBearer\s+[A-Za-z0-9_\-.=/+]{20,}\b/g },
+  // sk- 要求至少一位数字,避免误杀 sk-button-primary 等 kebab 命名(审查确认的误杀面)
+  { kind: 'openai-key', re: /\bsk-(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}\b/g },
+  // 认证 scheme 大小写不敏感(RFC 7235),真值部分需含 JWT 头或 =/(+ 拦 Basic base64)
+  { kind: 'bearer', re: /\bbearer\s+(?:eyJ[A-Za-z0-9_-]{10,}|[A-Za-z0-9_\-]{16,}[=+/][A-Za-z0-9_\-=/+]{10,})/gi },
+  { kind: 'slack-token', re: /\bxox[bposa]-[0-9A-Za-z-]{10,}\b/g },
+  { kind: 'google-key', re: /\bAIza[0-9A-Za-z_\-]{30,}\b/g },
   { kind: 'phone', re: /\b1[3-9]\d{9}\b/g },
   { kind: 'id-card', re: /\b\d{17}[\dXx]\b/g },
 ]
@@ -247,12 +251,13 @@ export function redactSecrets(text: string): string {
 }
 
 /**
- * 入库前剥离注入协议标签字样(防闭合逃逸伪造):任何文本中的 <memory_context>
- * 开闭标签转义为 &lt;…&gt;,使注入段永远是"一层壳",无法被内容嵌套穿透。
+ * 入库前剥离注入协议标签字样(防闭合逃逸伪造)。匹配放宽到容忍空白/大小写/
+ * 属性变体(LLM 分词器对这些变体的容忍度远高于词法精确匹配——审查确认
+ * 单空格即可穿透精确形式)。转义后壳永远只有一层,内容无法闭壳。
  */
 export function stripMemoryTags(text: string): string {
   return text
-    .replace(/<\/?memory_context>/g, match => match.replace(/[<>]/g, ch => (ch === '<' ? '&lt;' : '&gt;')))
+    .replace(/<\s*\/?\s*memory_context[^>]*>/gi, match => match.replace(/[<>]/g, ch => (ch === '<' ? '&lt;' : '&gt;')))
 }
 
 /** 写入内容统一清洗(脱敏 + 协议标签防护)。 */
@@ -379,12 +384,18 @@ export class MemoryStore {
         await fsp.readFile(file, 'utf8').catch(() => ''),
         scope,
       )
-      // pinned 语义:显式 true/false 设置/取消;未提及时继承现状(与 created 同类)
+      // pinned/importance/title 语义:显式设置;未提及时继承现状(importance/title
+      // 若不继承,一次工具更新会把 LLM 打的分与标题静默清零——审查确认的丢字段)
       const pinned = record.pinned ?? existing?.pinned
-      // 安全包:所有写入路径统一过脱敏 + 协议标签防护(单点拦截)
+      const importance = record.importance ?? existing?.importance
+      const title = record.title ?? existing?.title
+      // 安全包:所有写入路径统一过脱敏 + 协议标签防护(单点拦截,含 title——
+      // title 进索引行即注入内容,绕过即穿透壳/泄密,审查 blocker)
       written = {
         ...record,
         ...(pinned === true ? { pinned: true } : {}),
+        ...(importance !== undefined ? { importance } : {}),
+        ...(title !== undefined ? { title: sanitizeContent(title) } : {}),
         description: sanitizeContent(record.description),
         body: sanitizeContent(record.body),
         ...mergeLifecycleMeta(existing, Date.now()),
@@ -409,7 +420,10 @@ export class MemoryStore {
         const record = parseMemory(await fsp.readFile(file, 'utf8').catch(() => ''), scope)
         if (record === null) return
         // 仅当旧记录当前处于"零引用超龄"隐藏态(本次计数会使其复活)才重建索引;
-        // 否则 reads/lastRead 不进索引正文,重建产出逐字节相同——纯 O(N) 浪费(审查 major 修复)
+        // 行为决策(非纯优化,审查修正注释):仅在旧记录处于"零引用超龄"隐藏态
+        // (本次计数会使其复活)时才重建索引。lastReadMs 是三因子排序锚点,
+        // 若每次 touch 都重建,注入段文本会随每次 memory_read 抖动、打击 KV
+        // 前缀缓存——故接受"排序到下次 write/delete/refresh 才生效"的延迟。
         const visibilityWillChange = isStale(record, this.staleAfterDays, Date.now())
         const touched: MemoryRecord = {
           ...record,

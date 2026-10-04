@@ -60,13 +60,15 @@ export function renderMemoryIndexText(store: MemoryStore, config: Config, cwd: s
   if (Buffer.byteLength(index, 'utf8') <= budget) {
     text = index
   } else {
-    // 超预算:按行截断(保住标题与尽可能靠前的行),尾部留截断标记
+    // 超预算:按行截断(保住标题与尽可能靠前的行),尾部留截断标记。
+    // 超长单行被跳过而非终止循环(continue):一条臃肿行不应把它排序位置之后的
+    // 全部记忆挤出注入——审查确认的单行 DoS。
     const lines = index.split('\n')
     const kept: string[] = []
     let size = 0
     for (const line of lines) {
       const lineSize = Buffer.byteLength(line + '\n', 'utf8')
-      if (size + lineSize > budget) break
+      if (size + lineSize > budget) continue
       kept.push(line)
       size += lineSize
     }

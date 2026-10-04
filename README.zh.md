@@ -168,9 +168,13 @@ dsh --profile demo                               # 重启 profile 生效
 ```yaml
 - id: auto-memory
   config:
-    maxBytes: 4096          # 注入预算
+    maxBytes: 4096          # 注入预算(索引+指导文本+协议壳)
     memoryDir: D:/memories  # 默认: $DSH_HOME/memory
     enableUserScope: true   # false: 用户层在所有路径禁用
+    autoSummarize: false         # true: 根会话结束时后台 LLM 提取持久事实写入
+    autoSummarizeMaxMemories: 5  # 单次固化上限
+    autoSummarizeMaxTokens: 2048 # 固化输出 token 上限
+    staleAfterDays: 0            # >0: 软隐藏超 N 天零引用记忆(文件保留)
 ```
 
 ## 工作原理(60 秒)

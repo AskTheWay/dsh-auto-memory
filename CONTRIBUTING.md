@@ -54,6 +54,15 @@ Local tryout: `npm run build && dsh plugin --profile demo add /abs/path/to/dsh-a
 6. **The injected prompt text must survive strict interpolation** (no bare `{{`
    reaches the section text — `neutralizeBraces` handles it until peer
    `>=0.1.6`'s `interpolate: false` lands).
+7. **Every write is sanitized in `store.write`** (`redactSecrets` +
+   `stripMemoryTags`) — secrets must never reach the disk, and memory content
+   must never be able to forge the `<memory_context>` wrapper. If you add a new
+   write path, route it through `store.write`; never bypass. (Validated the
+   hard way: a real npm token in a test sample was blocked by GitHub Push
+   Protection — same class of defense, different layer.)
+8. **Client-half bundles may only require baseline modules** (react / cordis /
+   ui-slots / ui-primitives / dockkit / client-store); everything else is
+   `import type`. A broken activation white-screens the entire frontend.
 
 ## Design references
 

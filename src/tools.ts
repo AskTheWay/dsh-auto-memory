@@ -104,11 +104,11 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
       const scope = guardScope(explicit ?? existing?.scope ?? 'project')
       await store.write({
         name,
-        title: args.title !== undefined && args.title.trim().length > 0 ? args.title.trim() : undefined,
+        title: args.title !== undefined && args.title.trim().length > 0 ? args.title.trim().slice(0, 80) : undefined,
         ...(args.pinned !== undefined ? { pinned: args.pinned } : {}),
-        description: args.description.trim(),
+        description: args.description.trim().slice(0, 160),
         type: args.type,
-        body: args.body,
+        body: args.body.slice(0, 2000),
       }, scope, cwd)
       const operation: 'created' | 'updated' = existing === null || existing.scope !== scope ? 'created' : 'updated'
       return { name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true }
