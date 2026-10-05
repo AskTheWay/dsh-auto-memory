@@ -82,18 +82,25 @@ function memoryFace(ctx: ClientContext): MemoryFace {
 }
 
 interface SessionsLike {
-  list?: { getSnapshot?: () => { byId?: Record<string, { cwd?: string }> } }
+  list?: { getSnapshot?: () => { byId?: Record<string, { cwd?: string, running?: boolean, updatedAt?: number }> } }
 }
 
-/** 从 sessions 快照取一个可用的工作区 cwd(官方 ui-reference 同款读取面)。 */
+/** 从 sessions 快照解析当前工作区 cwd(#9:多工作区并存时不再取首个)。 */
 function currentCwd(ctx: ClientContext): string | undefined {
   const sessions = ctx.get('sessions') as SessionsLike | undefined
   const byId = sessions?.list?.getSnapshot?.()?.byId
   if (byId === undefined) return undefined
-  for (const session of Object.values(byId)) {
-    if (session.cwd !== undefined && session.cwd.length > 0) return session.cwd
-  }
-  return undefined
+  const rows = Object.values(byId).filter(session =>
+    session.cwd !== undefined && session.cwd.length > 0)
+  if (rows.length === 0) return undefined
+  // 优先正在运行的会话;其次最近活动的;同级按 cwd 稳定排序防抖动
+  const running = rows.filter(session => session.running === true)
+  const pool = running.length > 0 ? running : rows
+  pool.sort((a, b) => {
+    const delta = (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+    return delta !== 0 ? delta : (a.cwd! < b.cwd! ? -1 : 1)
+  })
+  return pool[0]?.cwd
 }
 
 /** 注册侧栏入口与记忆管理面板。 */
