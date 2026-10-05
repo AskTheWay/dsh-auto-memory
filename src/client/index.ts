@@ -40,8 +40,8 @@ export const inject = ['slots', 'locale', 'sessions']
 /** 面板可用的操作面(宿主半路由的浏览器侧封装;组件永不直接拿 ctx)。 */
 export interface MemoryFace {
   list: () => Promise<{ groups: unknown[]; maxBytes: number }>
-  read: (query: { name: string; scope: string; cwd?: string }) => Promise<{ body: string; pinned: boolean }>
-  write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean }) => Promise<Response>
+  read: (query: { name: string; scope: string; cwd?: string }) => Promise<{ body: string; pinned: boolean; disabled: boolean }>
+  write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean }) => Promise<Response>
   del: (payload: { cwd?: string; scope: string; name: string }) => Promise<Response>
   /** 当前会话工作区的 cwd(项目组操作的定位键;无会话时 undefined)。 */
   currentCwd: () => string | undefined
@@ -65,7 +65,7 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       // 非 2xx 必须抛错:调用方据此中止编辑/置顶——旧实现把 {error} 当数据,
       // 空 body 整条重写会清空记忆正文(审查确认的 major)
       if (!response.ok) throw new Error(`memory.read HTTP ${String(response.status)}`)
-      return (await response.json()) as { body: string; pinned: boolean }
+      return (await response.json()) as { body: string; pinned: boolean; disabled: boolean }
     },
     write: payload => fetch(`${BASE}/memory.write`, {
       method: 'POST',

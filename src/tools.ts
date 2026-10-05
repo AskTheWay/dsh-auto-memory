@@ -77,6 +77,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         type: 'boolean',
         description: 'Pin this memory: it sorts first in the index, survives budget truncation, and is never hidden by staleness eviction. Use when the user explicitly says to keep something forever; unpin by passing false',
       },
+      disabled: {
+        type: 'boolean',
+        description: 'Soft-mute: keep the file but exclude it from the injected index (the memory stops reaching the model without being deleted). Use when the user says "stop bringing this up" or similar; unmute by passing false',
+      },
       scope: {
         type: 'string', enum: ['project', 'user'],
         description: "project: only this workspace's sessions; user: all sessions of this user. Default: update the layer where this name already exists, else project",
@@ -106,6 +110,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         name,
         title: args.title !== undefined && args.title.trim().length > 0 ? args.title.trim().slice(0, 80) : undefined,
         ...(args.pinned !== undefined ? { pinned: args.pinned } : {}),
+        ...(args.disabled !== undefined ? { disabled: args.disabled } : {}),
         description: args.description.trim().slice(0, 160),
         type: args.type,
         body: args.body.slice(0, 2000),
