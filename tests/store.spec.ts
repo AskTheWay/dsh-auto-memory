@@ -293,9 +293,16 @@ describe('P0.5:安全包与三因子排序', () => {
     expect(text.indexOf('mm-high')).toBeLessThan(text.indexOf('zz-low'))
   })
 
-  it('descriptionSimilarity:近重复高分,不同主题低分(英文按词;中文整段一 token,粒度粗)', () => {
+  it('descriptionSimilarity:近重复高分,不同主题低分(英文按词;中文 bigram,#5 回归)', () => {
     expect(descriptionSimilarity('user prefers python backend', 'user prefers python backend dev')).toBeGreaterThanOrEqual(0.7)
     expect(descriptionSimilarity('user prefers python', 'pg connection pool lesson')).toBeLessThan(0.2)
+    // 中文近重复(加前后缀/微改)→ bigram 后达标(此前整段单 token 仅 ~0.4,防回声失效)
+    expect(descriptionSimilarity('用户是准备面试的 Python 后端工程师', '用户是准备面试的 Python 后端工程师(补充)')).toBeGreaterThanOrEqual(0.7)
+    // 同义改写(是→为、拆句)≈0.6:低于阈值不去重——语义正确,改写是真实更新而非回声
+    expect(descriptionSimilarity('用户是准备面试的 Python 后端工程师', '用户为 Python 后端工程师,正在准备面试')).toBeLessThan(0.7)
+    // 不同主题的中文仍远低于阈值(不误杀)
+    expect(descriptionSimilarity('用户偏好中文交流', 'PG 连接池压测教训')).toBeLessThan(0.2)
+    expect(descriptionSimilarity('用户在上海工作', '用户在北京工作')).toBeLessThan(0.7)
   })
 })
 
