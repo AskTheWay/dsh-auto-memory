@@ -211,7 +211,10 @@ describe('P0.5:安全包与三因子排序', () => {
     expect(redactSecrets('AKIAIOSFODNN7EXAMPLE')).toBe('[REDACTED:aws-key]')
     expect(redactSecrets('npm_' + 'd'.repeat(36))).toBe('[REDACTED:npm-token]')
     expect(redactSecrets('电话 13812345678')).toBe('电话 [REDACTED:phone]')
-    expect(redactSecrets('身份证 11010119900307867X')).toBe('身份证 [REDACTED:id-card]')
+    // 校验位有效(GB11643 加权和通过)才按身份证脱敏;订单号等任意 18 位数字保留(#7)
+    expect(redactSecrets('身份证 11010519491231002X')).toBe('身份证 [REDACTED:id-card]')
+    expect(redactSecrets('订单号 157374123456789013 需跟进')).toBe('订单号 157374123456789013 需跟进')
+    expect(redactSecrets('旧的示例 11010119900307867X 其实校验不过')).toBe('旧的示例 11010119900307867X 其实校验不过')
     expect(redactSecrets('普通的 PostgreSQL 15432 端口说明')).toBe('普通的 PostgreSQL 15432 端口说明')
   })
 
