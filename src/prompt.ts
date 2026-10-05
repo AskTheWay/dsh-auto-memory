@@ -1,7 +1,7 @@
 /**
  * 系统提示词注入:MEMORY.md 索引 + 写入指导合并为单个动态段。
  *
- * 通道(调研拍板,见 docs/api-reports.md systemPrompt 报告):
+ * 通道(调研拍板,见 internal research notes systemPrompt 报告):
  * ctx.systemPrompt.section 全局注册 + text 按 context.agent 求值——对齐 Claude Code
  * (MEMORY.md 在系统提示词内)。索引只在 memory_write/delete 后变化,文本未变时
  * 组装不产生新提交,KV 前缀缓存损失可接受。

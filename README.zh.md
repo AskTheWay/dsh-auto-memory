@@ -187,7 +187,6 @@ dsh --profile demo                               # 重启 profile 生效
   一切走标准 `tool/call` / `tool/result`。
 
 深度内容:[设计决策](docs/design.md) ·
-[dsh 源码级调研](docs/api-reports.md) ·
 [复盘:向 awesome-dsh-plugin 提 PR](docs/postmortem-pr-5696.md)
 
 ## 路线图

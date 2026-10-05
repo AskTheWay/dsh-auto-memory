@@ -1,7 +1,7 @@
 /**
  * 宿主半的 Web API:浏览器面板经 Connection 认证围栏读写记忆。
  *
- * 形态(源码调研结论,见 docs/api-reports.md):
+ * 形态(源码调研结论,见 internal research notes):
  * - `ctx.connection.fetch.register` 注册路由(dsh 认证围栏内,loopback 默认);
  * - 路径用点号分段(/api/auto-memory/memories.list)避开网关的两段认领形状;
  * - 机会式获取 connection:非 web 组合(headless/测试栈)没有该服务,静默 no-op;

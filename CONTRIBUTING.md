@@ -13,8 +13,8 @@ src/
   consolidate.ts  P1 auto-consolidation (session capture → agent/disposed → LLM)
   types.ts        Core types (MemoryRecord, MemoryType, MemoryScope)
 tests/            vitest: store logic, consolidation pure functions, real-stack integration
-docs/             design.md (decisions) · api-reports.md (dsh source research)
-                  postmortem-pr-5696.md (shipping war stories)
+docs/             design.md (decisions) · postmortem-pr-5696.md (shipping war stories)
+                  (internal research notes live outside the repo)
 scripts/demo.mjs  Key-less demo: write → index → inject → dedupe → forget
 ```
 
@@ -67,6 +67,4 @@ Local tryout: `npm run build && dsh plugin --profile demo add /abs/path/to/dsh-a
 ## Design references
 
 - [docs/design.md](docs/design.md) — architecture decisions and trade-offs
-- [docs/api-reports.md](docs/api-reports.md) — dsh source-level research backing
-  every integration choice
 - dsh plugin docs: [user/develop](https://github.com/deepseek-ai/deepseek-harness/tree/main/docs/user/develop)

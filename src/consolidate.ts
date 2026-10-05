@@ -1,7 +1,7 @@
 /**
  * P1:会话结束自动固化(consolidation)。
  *
- * 流程(全部挂点来自源码调研,见 docs/api-reports.md eventsCompaction 报告):
+ * 流程(全部挂点来自源码调研,见 internal research notes eventsCompaction 报告):
  * 1. 会话进行中:监听 `session/event`(fire-and-forget),把人类输入与模型回复的
  *    文本以轻量摘要形式累积进内存缓冲(不读 deprecated 的 snapshotEvents/eventAt,
  *    不写任何自定义会话事件)。

@@ -220,7 +220,6 @@ Override in your profile's `cordis.patch.yml` (config replaces wholesale):
   resume); everything flows through standard `tool/call` / `tool/result`.
 
 Deep dives: [design decisions](docs/design.md) ·
-[dsh source-level research](docs/api-reports.md) ·
 [postmortem: shipping a PR to awesome-dsh-plugin](docs/postmortem-pr-5696.md)
 
 ## Roadmap

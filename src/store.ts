@@ -1,7 +1,7 @@
 /**
  * 记忆存储层:类型化记忆文件 CRUD + MEMORY.md 索引维护。
  *
- * 关键设计决策(依据源码调研与对抗性审查,见 docs/api-reports.md):
+ * 关键设计决策(依据源码调研与对抗性审查,见 internal research notes):
  * 1. **必须用 node:fs 而非 ctx.fs**——默认部署的 fs-sandbox 可写根不含 $DSH_HOME,
  *    走 ctx.fs 会抛 FS_SANDBOX_DENIED;官方先例 skill-filesystem 访问 $DSH_HOME
  *    下的文件同样直接用 node:fs。
