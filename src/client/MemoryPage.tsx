@@ -61,6 +61,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   const [error, setError] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ group: PanelGroup; memory: PanelMemory; body: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -79,12 +80,15 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
 
   const act = async (fn: () => Promise<Response>): Promise<void> => {
     setBusy(true)
+    setActionError(null)
     try {
       const response = await fn()
-      if (!response.ok) console.warn('[auto-memory] action failed', response.status)
-      await load()
+      if (!response.ok) setActionError(response.status === 404 ? t('deleteFailed') : t('saveFailed'))
+    } catch {
+      setActionError(t('saveFailed')) // 网络层失败不再成为未处理 rejection(#8)
     } finally {
       setBusy(false)
+      await load()
     }
   }
 
@@ -113,7 +117,10 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
     <section style={{ padding: '20px', maxWidth: '860px' }}>
       <h2>{t('title')}</h2>
       <p style={{ opacity: 0.75 }}>{t('intro')}</p>
-      <p><button onClick={() => { void load() }} disabled={busy}>{t('refresh')}</button></p>
+      <p>
+        <button onClick={() => { void load() }} disabled={busy}>{t('refresh')}</button>
+        {actionError !== null && <span style={{ marginLeft: '12px', color: '#d97706' }}>{actionError}</span>}
+      </p>
       {total === 0 && <p>{t('empty')}</p>}
       {groups.map(group => {
         const usage = group.indexBytes / maxBytes
@@ -178,6 +185,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
           t={t}
           initial={editing.memory}
           initialBody={editing.body}
+          busy={busy}
           onCancel={() => { setEditing(null) }}
           onSave={async payload => {
             await act(() => write({ cwd: cwd(editing.group), scope: editing.group.scope, ...payload }))
@@ -190,10 +198,12 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
 }
 
 /** 单条记忆编辑器(标题/摘要/正文,保存即重建索引、下次注入生效)。 */
-function MemoryEditor({ t, initial, initialBody, onSave, onCancel }: {
+function MemoryEditor({ t, initial, initialBody, busy, onSave, onCancel }: {
   t: Translate
   initial: PanelMemory
   initialBody: string
+  /** 保存进行中:禁用 Save/Cancel,防双击重复提交(#8) */
+  busy: boolean
   onSave: (payload: { name: string; title?: string; description: string; type: string; body: string; pinned?: boolean }) => Promise<void>
   onCancel: () => void
 }): ReactNode {
@@ -214,8 +224,8 @@ function MemoryEditor({ t, initial, initialBody, onSave, onCancel }: {
       <p style={{ margin: '8px 0' }}>{t('bodyField')}:</p>
       <textarea style={{ width: '100%', minHeight: '120px', boxSizing: 'border-box' }} value={body} onChange={event => { setBody(event.target.value) }} />
       <p style={{ margin: '8px 0 0' }}>
-        <button onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>{t('save')}</button>{' '}
-        <button onClick={onCancel}>{t('cancel')}</button>
+        <button disabled={busy} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>{t('save')}</button>{' '}
+        <button disabled={busy} onClick={onCancel}>{t('cancel')}</button>
       </p>
     </div>
   )
