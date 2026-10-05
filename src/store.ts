@@ -241,12 +241,27 @@ const SECRET_PATTERNS: readonly { kind: string; re: RegExp }[] = [
 ]
 
 /**
+ * GB11643 身份证校验位验证:18 位号码仅当末位与加权模 11 校验相符才算真身份证。
+ * 纯长度匹配会把订单号/雪花 ID 等任意 18 位数字一并误杀(#7)。
+ */
+function isValidIdCard(candidate: string): boolean {
+  if (!/^\d{17}[\dXx]$/.test(candidate)) return false
+  const WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2] as const
+  const CHECKS = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'] as const
+  let sum = 0
+  for (let i = 0; i < 17; i++) sum += Number(candidate[i]) * WEIGHTS[i]
+  return candidate[17].toUpperCase() === CHECKS[sum % 11]
+}
+
+/**
  * 写入前脱敏(纯函数,可测):把高置信密钥/手机号/身份证替换为 [REDACTED:kind]。
- * 应用于 description 与 body——所有写路径(工具/固化/面板)都经 store.write,单点拦截。
+ * 应用于 description/body——所有写路径(工具/固化/面板)都经 store.write,单点拦截。
  */
 export function redactSecrets(text: string): string {
   let out = text
-  for (const { kind, re } of SECRET_PATTERNS) out = out.replace(re, `[REDACTED:${kind}]`)
+  for (const { kind, re } of SECRET_PATTERNS) {
+    out = out.replace(re, match => (kind === 'id-card' && !isValidIdCard(match) ? match : `[REDACTED:${kind}]`))
+  }
   return out
 }
 
