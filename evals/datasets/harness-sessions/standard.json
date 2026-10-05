@@ -1,0 +1,135 @@
+{
+  "name": "standard",
+  "persona": {
+    "name": "py-backend-interviewee",
+    "stack": ["Python", "PostgreSQL", "FastAPI"],
+    "workspaces": ["D:/work/api-server", "D:/work/idgen"]
+  },
+  "sessions": [
+    { "id": 1, "date": "2026-09-14", "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "psycopg2 又 PoolError 了。记住教训:连接必须 context manager 归还。" },
+        { "role": "user", "text": "部署定了吗?定了:10-20 上生产,单机 Docker Compose。" },
+        { "role": "user", "text": "我偏好中文交流,注释也中文。" },
+        { "role": "user", "text": "ERR-TMP-5501 这个码不用管,临时告警。" }
+      ] },
+    { "id": 2, "date": "2026-09-16", "cwd": "D:/work/idgen",
+      "messages": [
+        { "role": "user", "text": "idgen 选型定雪花算法,时钟回拨用等待策略。记住决策。" },
+        { "role": "user", "text": "压测要预热,前几秒冷启动噪声得扔。教训记住。" },
+        { "role": "user", "text": "我晚上十点后写代码,白天上班别打断。" }
+      ] },
+    { "id": 3, "date": "2026-09-17", "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "FastAPI 的依赖注入挺好用,项目以后都用 FastAPI 写新接口。记住这个约定。" },
+        { "role": "user", "text": "内部面板 https://obs.internal.example.com/grafana,性能问题先看它。" },
+        { "role": "user", "text": "数据库迁移工具用什么?定了 Alembic,别再问。"
+        }
+      ] },
+    { "id": 4, "date": "2026-09-19", "cwd": "D:/work/idgen",
+      "messages": [
+        { "role": "user", "text": "雪花算法的 workerId 分配:用 Redis 自增,重启不回收。记住。" },
+        { "role": "user", "text": "测试框架统一 pytest + pytest-asyncio,团队约定,记住。" },
+        { "role": "user", "text": "昨天 ERR-TMP-5501 又出现,还是不用管。" }
+      ] },
+    { "id": 5, "date": "2026-09-21", "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "改主意了:生产部署从单机 Compose 改双机 + Nginx 负载均衡,时间不变 10-20。" },
+        { "role": "user", "text": "接口鉴权从 session 改 JWT,原因:后面要给小程序用。记住。" },
+        { "role": "user", "text": "别给我生成没有类型的 Python 代码,我要全类型标注。这是偏好,记住。" }
+      ] },
+    { "id": 6, "date": "2026-09-23", "cwd": "D:/work/idgen",
+      "messages": [
+        { "role": "user", "text": "benchmark 脚本输出 P99 就够了,P50 不用看。个人偏好。" },
+        { "role": "user", "text": "时钟回拨等待策略改成拒绝服务:超过 5ms 直接报错。更新决策。" },
+        { "role": "user", "text": "借了本《Designing Data-Intensive Applications》,看完第四章了,感兴趣的部分是日志型存储。"
+        }
+      ] },
+    { "id": 7, "date": "2026-09-25", "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "日志方案定 structlog,不用 stdlib logging。团队决定,记住。" },
+        { "role": "user", "text": "生产 PG 用主从,从库只读,写全走主库。架构约束,记住。" },
+        { "role": "user", "text": "我的 GitHub 用户名是 AskTheWay,别记错。" }
+      ] },
+    { "id": 8, "date": "2026-09-27", "cwd": "D:/work/idgen",
+      "messages": [
+        { "role": "user", "text": "workerId 上限 1024 够了,不用改。结论记住。" },
+        { "role": "user", "text": "CI 里 benchmark 失败阈值:P99 超 2ms 才算失败。记住。" },
+        { "role": "user", "text": "TMP-7742 是这个项目的临时分支名,会话里用,不用记。" }
+      ] },
+    { "id": 9, "date": "2026-09-29", "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "JWT 的 secret 轮换周期:30 天,运维定死的。记住。" },
+        { "role": "user", "text": "接口分页统一 cursor 式,不用 offset。团队约定。" },
+        { "role": "user", "text": "上次那个 500 报错的堆栈贴给你看下——算了,已经修了,不用看。" }
+      ] },
+    { "id": 10, "date": "2026-10-01", "cwd": "D:/work/idgen",
+      "messages": [
+        { "role": "user", "text": "DDIA 看到第十一章了,一致性哈希那章有启发。" },
+        { "role": "user", "text": "idgen 的 QPS 上报接 Prometheus,granafa 面板 ID 是 412。记住。" }
+      ] }
+  ],
+  "gold": {
+    "facts": [
+      { "name": "psycopg2-context-manager-lesson", "type": "feedback", "label": "durable", "evidence_sessions": [1], "description": "psycopg2 连接用 context manager 归还防池耗尽" },
+      { "name": "user-prefers-chinese", "type": "user", "label": "durable", "evidence_sessions": [1], "description": "中文交流与中文注释" },
+      { "name": "deploy-target", "type": "project", "label": "updated", "evidence_sessions": [1, 5], "answer_from": 5, "description": "10-20 上生产:双机+Nginx(s5 推翻单机)" },
+      { "name": "err-tmp-5501", "type": "project", "label": "ephemeral", "evidence_sessions": [1, 4], "description": "临时告警码,两次说不管" },
+      { "name": "idgen-snowflake-decision", "type": "project", "label": "durable", "evidence_sessions": [2], "description": "idgen 选雪花算法" },
+      { "name": "clock-backdoor-policy", "type": "project", "label": "updated", "evidence_sessions": [2, 6], "answer_from": 6, "description": "回拨>5ms 拒绝服务(s6 改等待为拒绝)" },
+      { "name": "benchmark-warmup-lesson", "type": "feedback", "label": "durable", "evidence_sessions": [2], "description": "压测预热,弃冷启动样本" },
+      { "name": "user-night-owl", "type": "user", "label": "durable", "evidence_sessions": [2], "description": "晚 10 点后写码,白天勿扰" },
+      { "name": "fastapi-convention", "type": "feedback", "label": "durable", "evidence_sessions": [3], "description": "新接口一律 FastAPI" },
+      { "name": "observability-panel", "type": "reference", "label": "durable", "evidence_sessions": [3], "description": "Grafana 面板 URL" },
+      { "name": "alembic-decision", "type": "project", "label": "durable", "evidence_sessions": [3], "description": "迁移工具用 Alembic" },
+      { "name": "workerid-redis-alloc", "type": "project", "label": "durable", "evidence_sessions": [4], "description": "workerId 用 Redis 自增,重启不回收" },
+      { "name": "pytest-convention", "type": "feedback", "label": "durable", "evidence_sessions": [4], "description": "pytest+pytest-asyncio 统一测试栈" },
+      { "name": "jwt-auth-switch", "type": "project", "label": "durable", "evidence_sessions": [5], "description": "鉴权 session→JWT,为小程序" },
+      { "name": "user-wants-typed-python", "type": "user", "label": "durable", "evidence_sessions": [5], "description": "全类型标注,拒绝裸 Python" },
+      { "name": "p99-only-preference", "type": "user", "label": "durable", "evidence_sessions": [6], "description": "只看 P99,P50 不看" },
+      { "name": "structlog-decision", "type": "project", "label": "durable", "evidence_sessions": [7], "description": "日志用 structlog" },
+      { "name": "pg-primary-replica", "type": "project", "label": "durable", "evidence_sessions": [7], "description": "PG 主从,写走主库" },
+      { "name": "github-username", "type": "user", "label": "durable", "evidence_sessions": [7], "description": "GitHub 用户名 AskTheWay" },
+      { "name": "workerid-cap-1024", "type": "project", "label": "durable", "evidence_sessions": [8], "description": "workerId 上限 1024 够用" },
+      { "name": "ci-p99-threshold", "type": "project", "label": "durable", "evidence_sessions": [8], "description": "CI 失败阈值 P99>2ms" },
+      { "name": "tmp-7742-branch", "type": "project", "label": "ephemeral", "evidence_sessions": [8], "description": "临时分支代号" },
+      { "name": "jwt-secret-rotation", "type": "project", "label": "durable", "evidence_sessions": [9], "description": "JWT secret 30 天轮换" },
+      { "name": "cursor-pagination", "type": "feedback", "label": "durable", "evidence_sessions": [9], "description": "分页统一 cursor 式" },
+      { "name": "fixed-500-traceback", "type": "project", "label": "ephemeral", "evidence_sessions": [9], "description": "已修复的一次性报错" },
+      { "name": "ddia-reading-interest", "type": "user", "label": "durable", "evidence_sessions": [6, 10], "description": "在读 DDIA,关注日志存储/一致性哈希" },
+      { "name": "idgen-prometheus-panel", "type": "reference", "label": "durable", "evidence_sessions": [10], "description": "idgen QPS 上报 Prometheus,面板 ID 412" }
+    ],
+    "probes": [
+      { "q": "psycopg2 的坑?", "expect": ["psycopg2-context-manager-lesson"], "kind": "single-hop" },
+      { "q": "交流语言偏好?", "expect": ["user-prefers-chinese"], "kind": "single-hop" },
+      { "q": "生产部署架构?", "expect": ["deploy-target"], "kind": "knowledge-update" },
+      { "q": "idgen 用什么算法?回拨策略呢?", "expect": ["idgen-snowflake-decision", "clock-backdoor-policy"], "kind": "knowledge-update" },
+      { "q": "压测采样注意什么?", "expect": ["benchmark-warmup-lesson"], "kind": "single-hop" },
+      { "q": "我的深度工作时段?", "expect": ["user-night-owl"], "kind": "single-hop" },
+      { "q": "新接口用什么框架?", "expect": ["fastapi-convention"], "kind": "single-hop" },
+      { "q": "性能问题先看哪?", "expect": ["observability-panel"], "kind": "single-hop" },
+      { "q": "数据库迁移用什么工具?", "expect": ["alembic-decision"], "kind": "single-hop" },
+      { "q": "workerId 怎么分配?上限多少?", "expect": ["workerid-redis-alloc", "workerid-cap-1024"], "kind": "multi-hop" },
+      { "q": "测试框架约定?", "expect": ["pytest-convention"], "kind": "single-hop" },
+      { "q": "为什么改 JWT?", "expect": ["jwt-auth-switch"], "kind": "single-hop" },
+      { "q": "生成 Python 代码时注意什么?", "expect": ["user-wants-typed-python"], "kind": "single-hop" },
+      { "q": "benchmark 看哪个分位?", "expect": ["p99-only-preference"], "kind": "single-hop" },
+      { "q": "日志库选型?", "expect": ["structlog-decision"], "kind": "single-hop" },
+      { "q": "PG 读写怎么走?", "expect": ["pg-primary-replica"], "kind": "single-hop" },
+      { "q": "我的 GitHub 用户名?", "expect": ["github-username"], "kind": "single-hop" },
+      { "q": "CI 里 benchmark 何时算失败?", "expect": ["ci-p99-threshold"], "kind": "single-hop" },
+      { "q": "JWT secret 多久换?", "expect": ["jwt-secret-rotation"], "kind": "temporal" },
+      { "q": "分页怎么写?", "expect": ["cursor-pagination"], "kind": "single-hop" },
+      { "q": "我最近在读什么书?关注哪些章节?", "expect": ["ddia-reading-interest"], "kind": "multi-hop" },
+      { "q": "idgen 的监控面板?", "expect": ["idgen-prometheus-panel"], "kind": "single-hop" },
+      { "q": "部署是哪天?(只答日期)", "expect": ["deploy-target"], "kind": "temporal" },
+      { "q": "池坑、预热、P99 三件事?", "expect": ["psycopg2-context-manager-lesson", "benchmark-warmup-lesson", "p99-only-preference"], "kind": "multi-hop" },
+      { "q": "我用 Rust 吗?", "expect": [], "kind": "abstention" },
+      { "q": "我的 PG 密码?", "expect": [], "kind": "abstention" },
+      { "q": "api-server 的域名是什么?", "expect": [], "kind": "abstention" },
+      { "q": "DDIA 第几章没看?", "expect": [], "kind": "abstention" },
+      { "q": "我养猫吗?", "expect": [], "kind": "abstention" },
+      { "q": "idgen 上线时间?", "expect": [], "kind": "abstention" }
+    ]
+  }
+}

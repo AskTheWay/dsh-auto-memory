@@ -1,0 +1,79 @@
+{
+  "name": "mini",
+  "persona": {
+    "name": "py-backend-interviewee",
+    "stack": ["Python", "PostgreSQL"],
+    "workspaces": ["D:/work/api-server", "D:/work/idgen"]
+  },
+  "sessions": [
+    {
+      "id": 1,
+      "date": "2026-10-01",
+      "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "帮我看下这个 500。Traceback 最后是 psycopg2 PoolError: connection pool exhausted。" },
+        { "role": "assistant", "text": "池耗尽通常是连接未归还。检查了代码:几处 except 里没有 return 连接。建议统一用 context manager 包住 checkout。" },
+        { "role": "user", "text": "对,改完就好了。记住这个教训:psycopg2 的连接必须用 context manager 归还,不然池会耗尽。" },
+        { "role": "user", "text": "另外说下,我们部署目标定下来了:10 月 20 号上生产,用 Docker Compose,单机。" },
+        { "role": "assistant", "text": "记下了:2026-10-20 上生产,Docker Compose 单机部署。" },
+        { "role": "user", "text": "我个人习惯你记一下:我偏好中文交流,代码注释也用中文。" },
+        { "role": "user", "text": "哦对,今天调试时那个 ERR-TMP-8842 报错码是什么意思?算了不重要,继续改代码。" }
+      ]
+    },
+    {
+      "id": 2,
+      "date": "2026-10-03",
+      "cwd": "D:/work/idgen",
+      "messages": [
+        { "role": "user", "text": "新项目 idgen,要做一个分布式 ID 生成器。选型:雪花算法还是号段模式?" },
+        { "role": "assistant", "text": "雪花算法无外部依赖、延迟低;号段模式需要 DB 但更紧凑。你的场景?" },
+        { "role": "user", "text": "QPS 大概 5 万,不想依赖 DB 时钟回拨处理,选雪花。记住这个项目决策:idgen 用雪花算法,时钟回拨用等待策略。" },
+        { "role": "user", "text": "压测预热很重要:上次 benchmark 前几秒全是冷启动噪声,数据得扔掉。这个也是教训,记住。" },
+        { "role": "user", "text": "我一般是晚上 10 点后写代码,白天要上班,别在我白天提建议打断我。" },
+        { "role": "assistant", "text": "了解:偏好晚间深度工作,白天保持安静。" },
+        { "role": "user", "text": "顺便问下,上次 api-server 那个连接池问题后来怎么解决的?" },
+        { "role": "assistant", "text": "统一用 context manager 包住 checkout,连接归还后池耗尽消失。" }
+      ]
+    },
+    {
+      "id": 3,
+      "date": "2026-10-06",
+      "cwd": "D:/work/api-server",
+      "messages": [
+        { "role": "user", "text": "计划有变:生产部署从单机 Docker Compose 改成双机 + Nginx 负载均衡,时间还是 2026-10-20。" },
+        { "role": "assistant", "text": "更新了:2026-10-20 上生产,双机 + Nginx,不再是单机 Compose。" },
+        { "role": "user", "text": "给我一个压测时的 PG 连接池大小参考?" },
+        { "role": "assistant", "text": "结合之前的教训,建议按 (core_count * 2) + effective_spindle_count 起步,压测验证。你之前 psycopg2 池耗尽的根因是未归还,不是池小。" },
+        { "role": "user", "text": "好。另外记住一个资源:我们内部的可观测性面板在 https://obs.internal.example.com/grafana,以后提性能问题先看这个。" },
+        { "role": "user", "text": "昨天那个 ERR-TMP-8842 又出现了,不过还是不用管,那是个临时告警。" }
+      ]
+    }
+  ],
+  "gold": {
+    "facts": [
+      { "name": "psycopg2-context-manager-lesson", "type": "feedback", "label": "durable", "evidence_sessions": [1], "description": "psycopg2 连接必须用 context manager 归还,否则池耗尽" },
+      { "name": "user-prefers-chinese", "type": "user", "label": "durable", "evidence_sessions": [1], "description": "偏好中文交流与中文注释" },
+      { "name": "deploy-target", "type": "project", "label": "updated", "evidence_sessions": [1, 3], "answer_from": 3, "description": "2026-10-20 上生产,双机 + Nginx(session3 推翻单机 Compose)" },
+      { "name": "idgen-snowflake-decision", "type": "project", "label": "durable", "evidence_sessions": [2], "description": "idgen 选雪花算法,时钟回拨用等待策略" },
+      { "name": "benchmark-warmup-lesson", "type": "feedback", "label": "durable", "evidence_sessions": [2], "description": "压测前几秒是冷启动噪声,需预热后采数" },
+      { "name": "user-night-owl", "type": "user", "label": "durable", "evidence_sessions": [2], "description": "晚 10 点后深度工作,白天勿扰" },
+      { "name": "observability-panel", "type": "reference", "label": "durable", "evidence_sessions": [3], "description": "内部 Grafana 面板 URL,性能问题先看" },
+      { "name": "err-tmp-8842", "type": "project", "label": "ephemeral", "evidence_sessions": [1, 3], "description": "临时告警码,用户两次明确说不用管" },
+      { "name": "pool-error-traceback", "type": "project", "label": "ephemeral", "evidence_sessions": [1], "description": "一次性报错堆栈细节" }
+    ],
+    "probes": [
+      { "q": "我在 psycopg2 连接池上踩过什么坑?", "expect": ["psycopg2-context-manager-lesson"], "kind": "single-hop" },
+      { "q": "用什么语言和我交流比较好?", "expect": ["user-prefers-chinese"], "kind": "single-hop" },
+      { "q": "idgen 项目选了什么 ID 方案?时钟回拨怎么处理?", "expect": ["idgen-snowflake-decision"], "kind": "single-hop" },
+      { "q": "压测数据要注意什么?", "expect": ["benchmark-warmup-lesson"], "kind": "single-hop" },
+      { "q": "我什么时候写代码?什么时候别打断我?", "expect": ["user-night-owl"], "kind": "single-hop" },
+      { "q": "性能问题应该先看哪里?", "expect": ["observability-panel"], "kind": "single-hop" },
+      { "q": "生产部署方案是什么?", "expect": ["deploy-target"], "kind": "knowledge-update" },
+      { "q": "部署时间定在哪天?", "expect": ["deploy-target"], "kind": "temporal" },
+      { "q": "连接池坑和压测教训,两件事分别是什么?", "expect": ["psycopg2-context-manager-lesson", "benchmark-warmup-lesson"], "kind": "multi-hop" },
+      { "q": "我平时用什么前端框架?", "expect": [], "kind": "abstention" },
+      { "q": "我的 PG 数据库密码是什么?", "expect": [], "kind": "abstention" },
+      { "q": "idgen 项目的 deadline 是哪天?", "expect": [], "kind": "abstention" }
+    ]
+  }
+}
