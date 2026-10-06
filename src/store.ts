@@ -119,7 +119,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -136,6 +136,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       body: fm.body.trim(),
       scope,
       ...(pinned === true ? { pinned: true } : {}),
+      ...(disabled === true ? { disabled: true } : {}),
       ...(asImportance(importance) !== undefined ? { importance: asImportance(importance) } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
@@ -155,6 +156,7 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     description: record.description,
     type: record.type,
     ...(record.pinned === true ? { pinned: true } : {}),
+    ...(record.disabled === true ? { disabled: true } : {}),
     ...(record.importance !== undefined ? { importance: record.importance } : {}),
     ...(record.createdMs !== undefined ? { created: record.createdMs } : {}),
     ...(record.updatedMs !== undefined ? { updated: record.updatedMs } : {}),
@@ -191,7 +193,10 @@ export interface LifecycleMeta {
  */
 export function renderIndexBody(records: MemoryRecord[]): string {
   const now = Date.now()
-  const ordered = [...records].sort((a, b) => {
+  // 软停用(#10):不注入但文件保留——与软淘汰同款"隐藏不删除"语义;
+  // memory_list 与 memory_read 仍可见/可读,取消停用即恢复注入
+  const visible = records.filter(record => record.disabled !== true)
+  const ordered = [...visible].sort((a, b) => {
     const pa = a.pinned === true ? 0 : 1
     const pb = b.pinned === true ? 0 : 1
     if (pa !== pb) return pa - pb
@@ -416,6 +421,7 @@ export class MemoryStore {
       // pinned/importance/title 语义:显式设置;未提及时继承现状(importance/title
       // 若不继承,一次工具更新会把 LLM 打的分与标题静默清零——审查确认的丢字段)
       const pinned = record.pinned ?? existing?.pinned
+      const disabled = record.disabled ?? existing?.disabled
       const importance = record.importance ?? existing?.importance
       const title = record.title ?? existing?.title
       // 安全包:所有写入路径统一过脱敏 + 协议标签防护(单点拦截,含 title——
@@ -423,6 +429,7 @@ export class MemoryStore {
       written = {
         ...record,
         ...(pinned === true ? { pinned: true } : {}),
+        ...(disabled === true ? { disabled: true } : {}),
         ...(importance !== undefined ? { importance } : {}),
         ...(title !== undefined ? { title: sanitizeContent(title) } : {}),
         description: sanitizeContent(record.description),

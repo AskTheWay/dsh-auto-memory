@@ -263,6 +263,20 @@ describe('P0.5:安全包与三因子排序', () => {
     expect(redactSecrets('use the sk-button-primary-large class here')).toBe('use the sk-button-primary-large class here')
   })
 
+  it('软停用(#10):disabled 不进注入索引,文件保留,memory_list 可见;取消即恢复', async () => {
+    await store.write({ name: 'keep-visible', description: '正常注入', type: 'user', body: 'x' }, 'project', CWD)
+    await store.write({ name: 'muted-one', description: '被停用', type: 'user', body: 'x', disabled: true }, 'project', CWD)
+    const index = store.readIndexSync('project', CWD) ?? ''
+    expect(index).toContain('keep-visible')
+    expect(index).not.toContain('muted-one')            // 不注入
+    expect((await store.list('project', CWD)).map(r => r.name)).toContain('muted-one') // 文件保留、list 可见
+    // 更新未提及 disabled 时继承停用态;显式 false 恢复注入
+    await store.write({ name: 'muted-one', description: '被停用', type: 'user', body: 'y' }, 'project', CWD)
+    expect((store.readIndexSync('project', CWD) ?? '')).not.toContain('muted-one')
+    await store.write({ name: 'muted-one', description: '恢复', type: 'user', body: 'y', disabled: false }, 'project', CWD)
+    expect(store.readIndexSync('project', CWD) ?? '').toContain('muted-one')
+  })
+
   it('更新继承:未携带 importance/title 时保留现值(审查丢字段回归)', async () => {
     await store.write({ name: 'keep', title: '原标题', importance: 9, description: 'd', type: 'user', body: 'b' }, 'project', CWD)
     const updated = await store.write({ name: 'keep', description: 'd2', type: 'user', body: 'b2' }, 'project', CWD)

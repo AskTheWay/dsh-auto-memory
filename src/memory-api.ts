@@ -29,6 +29,7 @@ export interface PanelMemory {
   description: string
   type: MemoryType
   pinned: boolean
+  disabled: boolean
   reads: number
   updatedMs?: number
   bytes: number
@@ -79,6 +80,7 @@ async function readGroup(dir: string, scope: MemoryScope, slug: string): Promise
       description: record.description,
       type: record.type,
       pinned: record.pinned === true,
+      disabled: record.disabled === true,
       reads: record.reads ?? 0,
       ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
       bytes: Buffer.byteLength(raw, 'utf8'),
@@ -142,7 +144,7 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
       try {
         const record = await store.read(name, scope, cwd)
         if (record === null) return json({ error: 'not found' }, 404)
-        return json({ name: record.name, title: record.title, description: record.description, type: record.type, body: record.body, pinned: record.pinned === true })
+        return json({ name: record.name, title: record.title, description: record.description, type: record.type, body: record.body, pinned: record.pinned === true, disabled: record.disabled === true })
       } catch (error) {
         return json({ error: String(error) }, 400)
       }
@@ -155,7 +157,7 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
       try {
         const body = (await request.json()) as {
           cwd?: string; scope: MemoryScope; name: string; title?: string
-          description: string; type: MemoryType; body: string; pinned?: boolean
+          description: string; type: MemoryType; body: string; pinned?: boolean; disabled?: boolean
         }
         const cwd = body.scope === 'project' ? body.cwd : undefined
         if (body.scope === 'project' && (cwd === undefined || cwd.length === 0)) {
@@ -174,6 +176,7 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
           name,
           title: typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim().slice(0, 80) : undefined,
           ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+          ...(body.disabled === true ? { disabled: true } : {}),
           description: body.description.trim().slice(0, 160),
           type: body.type,
           body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',

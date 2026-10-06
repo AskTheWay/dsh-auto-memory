@@ -21,6 +21,7 @@ interface PanelMemory {
   description: string
   type: string
   pinned: boolean
+  disabled: boolean
   reads: number
   updatedMs?: number
   bytes: number
@@ -149,6 +150,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
                 <span style={{ minWidth: 0, flex: 1 }}>
                   <strong>{memory.title ?? memory.name}</strong>
                   {memory.pinned && <span title={t('pinned')}> 📌</span>}
+                  {memory.disabled && <span title={t('muted')}> 🔇</span>}
                   {' '}<code style={{ fontSize: '11px', opacity: 0.7 }}>{memory.type}/{memory.name}</code>
                   <br />
                   <span style={{ fontSize: '13px', opacity: 0.85 }}>{memory.description}</span>
@@ -170,7 +172,9 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
                     })()
                   }}>
                     {memory.pinned ? t('unpinAction') : t('pinAction')}
-                  </button>{' '}
+                  </button>{' '}<button disabled={busy} onClick={() => { void (async () => { try { const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) }); await act(() => write({ cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title, description: memory.description, type: memory.type, body: detail.body, pinned: memory.pinned, disabled: !memory.disabled })) } catch (error) { console.warn('[auto-memory] read failed, mute aborted', error); await load() } })() }}>
+                                      {memory.disabled ? t('unmuteAction') : t('muteAction')}
+                                    </button>{' '}
                   <button disabled={busy} onClick={() => { if (window.confirm(t('confirmDelete'))) void act(() => del({ cwd: cwd(group), scope: group.scope, name: memory.name })) }}>
                     {t('delete')}
                   </button>
