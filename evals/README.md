@@ -10,9 +10,11 @@
 | 层 | 内容 | 依赖 | 状态 |
 |---|---|---|---|
 | **L0 确定性指标** | 注入预算曲线 / 信噪比 / 淘汰零误杀 / 链接展开边界 | 无(纯计算) | ✅ `l0/`,随 CI 跑 |
-| L1 检索层 | 召回命中率 / 误召回率(合成会话 + 免 judge) | 固化一次(离线) | 计划 |
-| L3 固化精度 | precision / recall / 污染率 / 去重率 | API key | 计划 |
+| **L1 注入召回** | 合成数据集金标直写 → 逐 probe 注入可达性 | 无 API | ✅ `runners/l1-retrieval.mjs`(mini 与 standard 均 100%,完美固化上界) |
+| **L3 固化精度** | recall / precision / 污染率 / 更新正确率(真实 LLM 固化) | `DEEPSEEK_API_KEY`,≈会话数次调用 | ✅ `runners/l3-consolidation.mjs`(结果入 `results/`) |
 | L2 端到端 | 三模式 QA 对比 + 分阶段 token/耗时 | DSH + API key | 计划(可选) |
+
+**数据集**:`datasets/harness-sessions/`(`schema.md` 格式与质量红线;`mini` 手写 3 会话/12 题;`standard` 合成 10 会话/30 题含 6 拒答、4 ephemeral 陷阱、2 updated 推翻)。与 L0 的合成记忆构造器不同,这里的数据是**带金标标签的完整会话剧本**——coding-agent 语境(四类型记忆、双工作区、跨会话引用),LoCoMo/LongMemEval 均不覆盖。
 
 ## L0 指标定义
 
