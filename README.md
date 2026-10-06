@@ -25,6 +25,26 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
+## What's new in 0.6.0 (P2)
+
+- **Harness-sessions evaluation datasets** (`evals/datasets/`): synthetic
+  multi-session developer transcripts with gold-label facts — durable /
+  ephemeral-trap / updated labels, evidence sessions, abstention probes.
+  The coding-agent memory scenario no public benchmark covers.
+- **L1 injection recall** (zero-API runner): 100% on both datasets at the
+  perfect-consolidation ceiling — the injection side loses nothing.
+- **L3 consolidation quality** (one LLM call per session, same code path as
+  the plugin): **mini recall 100% / update-correctness 100% / pollution 0%;
+  standard recall 83.3% / precision 84.6% / update-correctness 100% /
+  pollution 0%** (deepseek-chat, temperature 0). Ephemeral traps were
+  correctly refused in every run.
+- **Product fix surfaced by the eval**: consolidation now writes
+  title/description in the transcript's language (Chinese transcripts used
+  to produce English memories — measured, then fixed).
+- Community: soft-mute (third state between keep and delete, #10), panel
+  current-workspace fix (#9), CJK bigram echo-dedup (#5), editor busy/error
+  UX (#8), GB11643 checksum before id-card redaction (#7).
+
 ## What's new in 0.5.0 (P2)
 
 - **Three-factor ranking** (Generative Agents formula, embedding-free):

@@ -154,6 +154,9 @@ sessions for this user, following these rules:
 Return ONLY a JSON array, each element exactly:
 {"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5}
 Use scope "user" only for user-global preferences; default "project".
+Write "name" in kebab-case English; write title/description/body in the SAME
+language as the transcript (a Chinese transcript gets Chinese memories —
+the user will read them).
 
 <transcript>
 ${transcript}
