@@ -28,7 +28,7 @@ if (API_KEY === undefined || API_KEY.length === 0) {
 }
 
 const datasetName = process.argv[2] ?? 'mini'
-const dataset = JSON.parse(await readFile(join(DATASETS, `${datasetName}.json`), 'utf8'))
+const dataset = /** @type {any} */ (JSON.parse(await readFile(join(DATASETS, `${datasetName}.json`), 'utf8')))
 
 /** 单次固化 LLM 调用(与插件 consolidate.ts 同 prompt、同解析路径)。 */
 async function consolidate(existingNames, transcript) {
@@ -43,7 +43,7 @@ async function consolidate(existingNames, transcript) {
     }),
   })
   if (!response.ok) throw new Error(`API ${String(response.status)}: ${(await response.text()).slice(0, 200)}`)
-  const data = await response.json() as { choices: Array<{ message: { content: string } }> }
+  const data = /** @type {{ choices: Array<{ message: { content: string } }> }} */ (await response.json())
   const text = data.choices[0]?.message?.content ?? ''
   return parseCandidates(text) ?? []
 }
