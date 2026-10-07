@@ -38,6 +38,19 @@ declare module '@deepseek-ai/dsh-agent' {
   }
 }
 
+// 0.2.x(session format v4)起,注入消息只接受 producer-owned 的 source kind:
+// 旧的 { kind: 'plugin', plugin: '…' } 已从 MessageSourceMap 移除,既过不了 0.2.x 的
+// 类型检查,v4 的持久消息准入也会在运行时拒绝
+// (SessionFormatError: format v4 message requires a producer-owned source kind)。
+// 本插件按官方 merge-extensible 惯例声明自己的 kind(session-format-v3-to-v4 的迁移
+// 说明与 docs/api-reports.md 都以此为准;tool-skill 的 'skill-catalog'、
+// dsh-skill 的 'skill-invocation' 同理)。
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-auto-memory': { kind: 'dsh-auto-memory' }
+  }
+}
+
 /** 固化配置(index.ts Config 的子集)。 */
 export interface ConsolidationOptions {
   autoSummarize: boolean
@@ -232,7 +245,7 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           model,
           messages: [createUserMessage({
             content: [{ type: 'text', text: prompt }],
-            source: { kind: 'plugin', plugin: 'dsh-auto-memory' },
+            source: { kind: 'dsh-auto-memory' },
           })],
           maxTokens: options.autoSummarizeMaxTokens,
           sessionId: agent.session.id,
