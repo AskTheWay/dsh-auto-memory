@@ -1,15 +1,18 @@
 /**
- * 记忆管理面板(主列全局面板):
- * - 分组列表:用户级 + 各项目组(当前工作区组标记可编辑)
- * - 容量条:每组索引字节 vs 注入预算(超 80% 预警)
- * - 逐条操作:编辑(标题/摘要/正文)、置顶/取消置顶、删除(带确认)
- * - 写入即生效:下次请求注入自动更新(纯文件派生索引,无需重启)
+ * 记忆管理面板(主列全局面板)—— 0.7.0 UI 人性化改造:
+ * - 顶部总览:全局记忆数/置顶/停用统计 + 总预算使用条
+ * - 类型徽章着色(user 蓝 / feedback 橙 / project 绿 / reference 灰)
+ * - 搜索过滤框:实时按名称/摘要/标题过滤(纯前端)
+ * - 相对时间显示("3 天前")替代裸时间戳
+ * - 每组摘要行(N 条 · X 置顶 · Y 停用)+ 容量条 + 注入预览
+ * - 空状态三步引导(说"记住…" → 写入落盘 → 下次会话自动注入)
+ * - 操作按钮带图标:✏️ 编辑 / 📌 置顶 / 🔇 停用 / 🗑 删除
  *
  * 样式内联(官方 CSS Modules 管线未随 preset 发布);控件不依赖
  * ui-primitives 具体导出面(降低跨版本脆弱性),仅用原生元素。
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MemoryFace } from './index.ts'
 import type { PluginMemoryLocaleKey } from './locales.ts'
@@ -57,6 +60,29 @@ const EDITOR_STYLE: React.CSSProperties = {
   color: 'var(--dsw-alias-label-primary, inherit)',
 }
 
+/** 类型徽章配色(半透明底 + 深字,深浅主题均可读)。 */
+const TYPE_BADGE: Record<string, { label: string; style: React.CSSProperties }> = {
+  user: { label: 'user', style: { background: 'rgba(96,165,250,.18)', color: '#3b82f6' } },
+  feedback: { label: 'feedback', style: { background: 'rgba(245,158,11,.18)', color: '#d97706' } },
+  project: { label: 'project', style: { background: 'rgba(34,197,94,.16)', color: '#16a34a' } },
+  reference: { label: 'reference', style: { background: 'rgba(148,163,184,.2)', color: '#64748b' } },
+}
+
+/** 小徽章通用形状。 */
+const BADGE_STYLE: React.CSSProperties = { display: 'inline-block', fontSize: '10px', lineHeight: '16px', padding: '0 6px', borderRadius: '4px', verticalAlign: '1px', fontWeight: 600, letterSpacing: '.02em' }
+
+/** 相对时间(纯函数,渲染时求值)。 */
+function relativeTime(ms: number | undefined, now: number, t: Translate): string | null {
+  if (ms === undefined) return null
+  const diff = Math.max(0, now - ms)
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 1) return t('justNow')
+  if (minutes < 60) return t('minutesAgo', { n: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return t('hoursAgo', { n: hours })
+  return t('daysAgo', { n: Math.floor(hours / 24) })
+}
+
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
 export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
@@ -65,6 +91,8 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
   const [actionError, setActionError] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ group: PanelGroup; memory: PanelMemory; body: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [now, setNow] = useState(() => Date.now())
 
   const load = useCallback(async () => {
     setError(false)
@@ -72,12 +100,26 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
       const data = await list()
       setGroups(data.groups as PanelGroup[])
       setMaxBytes(data.maxBytes)
+      setNow(Date.now())
     } catch {
       setError(true)
     }
   }, [list])
 
   useEffect(() => { void load() }, [load])
+
+  /** 前端过滤:名称/标题/摘要的子串匹配(不区分大小写)。 */
+  const needle = filter.trim().toLowerCase()
+  const visibleGroups = useMemo(() => {
+    if (groups === null || needle.length === 0) return groups
+    return groups.map(group => ({
+      ...group,
+      memories: group.memories.filter(memory =>
+        memory.name.toLowerCase().includes(needle)
+        || memory.description.toLowerCase().includes(needle)
+        || (memory.title ?? '').toLowerCase().includes(needle)),
+    })).filter(group => group.memories.length > 0 || group.indexText != null)
+  }, [groups, needle])
 
   const act = async (fn: () => Promise<Response>): Promise<void> => {
     setBusy(true)
@@ -106,6 +148,24 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
     }
   }
 
+  /** 读正文后整条重写的切换(pin/mute 共用;失败中止防清空正文)。 */
+  const toggleFlag = (group: PanelGroup, memory: PanelMemory, field: 'pinned' | 'disabled'): void => {
+    void (async () => {
+      try {
+        const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
+        await act(() => write({
+          cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title,
+          description: memory.description, type: memory.type, body: detail.body,
+          pinned: field === 'pinned' ? !memory.pinned : memory.pinned,
+          disabled: field === 'disabled' ? !memory.disabled : memory.disabled,
+        }))
+      } catch (error) {
+        console.warn('[auto-memory] read failed, toggle aborted', error)
+        await load()
+      }
+    })()
+  }
+
   if (error) {
     return <section style={{ padding: '24px' }}><p>{t('error')}</p><button onClick={() => { void load() }}>{t('retry')}</button></section>
   }
@@ -114,25 +174,70 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
   }
 
   const total = groups.reduce((sum, group) => sum + group.memories.length, 0)
+  const totalPinned = groups.reduce((sum, group) => sum + group.memories.filter(m => m.pinned).length, 0)
+  const totalMuted = groups.reduce((sum, group) => sum + group.memories.filter(m => m.disabled).length, 0)
+  const totalIndex = groups.reduce((sum, group) => sum + group.indexBytes, 0)
+  const totalUsage = totalIndex / maxBytes
+
   return (
     <section style={{ padding: '20px', maxWidth: '860px' }}>
-      <h2>{t('title')}</h2>
-      <p style={{ opacity: 0.75 }}>{t('intro')}</p>
-      <p>
-        <button onClick={() => { void load() }} disabled={busy}>{t('refresh')}</button>
-        {actionError !== null && <span style={{ marginLeft: '12px', color: '#d97706' }}>{actionError}</span>}
+      <h2 style={{ marginBottom: '4px' }}>{t('title')}</h2>
+      <p style={{ marginTop: 0, opacity: 0.75 }}>{t('intro')}</p>
+
+      {/* 顶部操作行:刷新 + 搜索 */}
+      <p style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={() => { void load() }} disabled={busy}>↻ {t('refresh')}</button>
+        <input
+          style={{ flex: '1 1 200px', minWidth: '160px', padding: '4px 8px', borderRadius: '4px', border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit' }}
+          placeholder={t('searchPlaceholder')} value={filter} onChange={event => { setFilter(event.target.value) }}
+        />
+        {actionError !== null && <span style={{ color: '#d97706' }}>{actionError}</span>}
       </p>
-      {total === 0 && <p>{t('empty')}</p>}
-      {groups.map(group => {
+
+      {/* 顶部总览统计 */}
+      <div style={{ ...GROUP_STYLE, display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <span>🧠 <strong>{total}</strong> {t('overviewMemories')}</span>
+        <span>📌 <strong>{totalPinned}</strong> {t('overviewPinned')}</span>
+        <span>🔇 <strong>{totalMuted}</strong> {t('overviewMuted')}</span>
+        <span style={{ flex: '1 1 120px', minWidth: '120px' }}>
+          <span style={{ fontSize: '11px', opacity: 0.75, display: 'block', marginBottom: '2px' }}>
+            {t('indexUsage')} {Math.round(totalUsage * 100)}%
+          </span>
+          <span style={{ ...BAR_STYLE, display: 'block', margin: 0 }}>
+            <span style={{ display: 'block', width: `${Math.min(100, totalUsage * 100)}%`, height: '100%', background: totalUsage > 0.8 ? '#d97706' : 'rgba(96,165,250,.9)' }} />
+          </span>
+        </span>
+      </div>
+
+      {/* 空状态三步引导 */}
+      {total === 0 && (
+        <div style={{ ...GROUP_STYLE, textAlign: 'center', opacity: 0.9 }}>
+          <p style={{ marginBottom: '4px' }}>🗣 {t('emptyStep1')}</p>
+          <p style={{ margin: '4px 0' }}>📝 {t('emptyStep2')}</p>
+          <p style={{ margin: '4px 0' }}>✨ {t('emptyStep3')}</p>
+        </div>
+      )}
+
+      {visibleGroups?.map(group => {
         const usage = group.indexBytes / maxBytes
         const hot = usage > 0.8
+        const pinnedCount = group.memories.filter(m => m.pinned).length
+        const mutedCount = group.memories.filter(m => m.disabled).length
         return (
           <div key={group.key} style={GROUP_STYLE}>
             <h3 style={{ margin: '0 0 4px' }}>
+              {group.scope === 'user' ? '👤 ' : '📁 '}
               {group.scope === 'user' ? t('userScope') : `${t('projectScope')} · ${group.slug}`}
+              {group.scope === 'project' && group.current === true && <span title={t('currentBadge')}> ✅</span>}
               {group.scope === 'project' && group.current !== true
                 && <small style={{ marginLeft: '8px', opacity: 0.65 }}>{t('projectNeedsSession')}</small>}
             </h3>
+            {/* 组摘要行 */}
+            <div style={{ fontSize: '12px', opacity: 0.8 }}>
+              {group.memories.length} {t('overviewMemories')}
+              {pinnedCount > 0 && <> · 📌 {pinnedCount}</>}
+              {mutedCount > 0 && <> · 🔇 {mutedCount}</>}
+            </div>
             <div style={{ fontSize: '12px', color: hot ? '#d97706' : 'inherit' }}>
               {t('indexUsage')}: {group.indexBytes}{t('bytes')} {t('of')} {t('budget')} {maxBytes}{t('bytes')} ({Math.round(usage * 100)}%)
             </div>
@@ -141,49 +246,38 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
             </div>
             {group.indexText != null && (
               <details style={{ margin: '6px 0' }}>
-                <summary style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.8 }}>{t('injectedPreview')}</summary>
+                <summary style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.8 }}>👁 {t('injectedPreview')}</summary>
                 <pre style={{ margin: '6px 0 0', padding: '8px', background: 'rgba(127,127,127,0.12)', borderRadius: '6px', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{group.indexText}</pre>
               </details>
             )}
-            {group.memories.map(memory => (
-              <div key={memory.name} style={ROW_STYLE}>
-                <span style={{ minWidth: 0, flex: 1 }}>
-                  <strong>{memory.title ?? memory.name}</strong>
-                  {memory.pinned && <span title={t('pinned')}> 📌</span>}
-                  {memory.disabled && <span title={t('muted')}> 🔇</span>}
-                  {' '}<code style={{ fontSize: '11px', opacity: 0.7 }}>{memory.type}/{memory.name}</code>
-                  <br />
-                  <span style={{ fontSize: '13px', opacity: 0.85 }}>{memory.description}</span>
-                  <span style={{ fontSize: '11px', opacity: 0.55 }}> · {memory.reads} {t('reads')}</span>
-                </span>
-                <span style={{ whiteSpace: 'nowrap' }}>
-                  <button disabled={busy} onClick={() => { void openEditor(group, memory) }}>{t('edit')}</button>{' '}
-                  <button disabled={busy} onClick={() => {
-                    // 置顶切换必须先取正文再整条重写;读取失败直接中止——
-                    // 旧实现失败时以空 body 写入会清空正文(审查确认的 major)
-                    void (async () => {
-                      try {
-                        const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
-                        await act(() => write({ cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title, description: memory.description, type: memory.type, body: detail.body, pinned: !memory.pinned }))
-                      } catch (error) {
-                        console.warn('[auto-memory] read failed, pin aborted', error)
-                        await load()
-                      }
-                    })()
-                  }}>
-                    {memory.pinned ? t('unpinAction') : t('pinAction')}
-                  </button>{' '}<button disabled={busy} onClick={() => { void (async () => { try { const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) }); await act(() => write({ cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title, description: memory.description, type: memory.type, body: detail.body, pinned: memory.pinned, disabled: !memory.disabled })) } catch (error) { console.warn('[auto-memory] read failed, mute aborted', error); await load() } })() }}>
-                                      {memory.disabled ? t('unmuteAction') : t('muteAction')}
-                                    </button>{' '}
-                  <button disabled={busy} onClick={() => { if (window.confirm(t('confirmDelete'))) void act(() => del({ cwd: cwd(group), scope: group.scope, name: memory.name })) }}>
-                    {t('delete')}
-                  </button>
-                </span>
-              </div>
-            ))}
+            {group.memories.map(memory => {
+              const badge = TYPE_BADGE[memory.type] ?? TYPE_BADGE.reference
+              const when = relativeTime(memory.updatedMs, now, t)
+              return (
+                <div key={memory.name} style={{ ...ROW_STYLE, opacity: memory.disabled ? 0.55 : 1 }}>
+                  <span style={{ minWidth: 0, flex: 1 }}>
+                    <strong>{memory.title ?? memory.name}</strong>
+                    {memory.pinned && <span title={t('pinned')}> 📌</span>}
+                    {memory.disabled && <span title={t('muted')}> 🔇</span>}
+                    {' '}<span style={{ ...BADGE_STYLE, ...badge.style }}>{badge.label}</span>
+                    {' '}<code style={{ fontSize: '11px', opacity: 0.7 }}>{memory.name}</code>
+                    <br />
+                    <span style={{ fontSize: '13px', opacity: 0.85 }}>{memory.description}</span>
+                    <span style={{ fontSize: '11px', opacity: 0.55 }}> · {memory.reads} {t('reads')}{when !== null ? ` · ${when}` : ''}</span>
+                  </span>
+                  <span style={{ whiteSpace: 'nowrap' }}>
+                    <button disabled={busy} title={t('edit')} onClick={() => { void openEditor(group, memory) }}>✏️</button>{' '}
+                    <button disabled={busy} title={memory.pinned ? t('unpinAction') : t('pinAction')} onClick={() => { toggleFlag(group, memory, 'pinned') }}>{memory.pinned ? '📍' : '📌'}</button>{' '}
+                    <button disabled={busy} title={memory.disabled ? t('unmuteAction') : t('muteAction')} onClick={() => { toggleFlag(group, memory, 'disabled') }}>{memory.disabled ? '🔈' : '🔇'}</button>{' '}
+                    <button disabled={busy} title={t('delete')} onClick={() => { if (window.confirm(t('confirmDelete'))) void act(() => del({ cwd: cwd(group), scope: group.scope, name: memory.name })) }}>🗑</button>
+                  </span>
+                </div>
+              )
+            })}
           </div>
         )
       })}
+      {filter.trim().length > 0 && (visibleGroups?.length ?? 0) === 0 && <p style={{ opacity: 0.7 }}>{t('noSearchHits')}</p>}
       {editing !== null && (
         <MemoryEditor
           t={t}
@@ -216,7 +310,7 @@ function MemoryEditor({ t, initial, initialBody, busy, onSave, onCancel }: {
   const [body, setBody] = useState(initialBody)
   return (
     <div style={EDITOR_STYLE}>
-      <h3 style={{ margin: 0 }}>{t('edit')}: <code>{initial.name}</code></h3>
+      <h3 style={{ margin: 0 }}>✏️ {t('edit')}: <code>{initial.name}</code></h3>
       <p style={{ margin: '8px 0' }}>
         {t('titleField')}:{' '}
         <input style={{ width: '60%' }} value={title} onChange={event => { setTitle(event.target.value) }} />
@@ -228,7 +322,7 @@ function MemoryEditor({ t, initial, initialBody, busy, onSave, onCancel }: {
       <p style={{ margin: '8px 0' }}>{t('bodyField')}:</p>
       <textarea style={{ width: '100%', minHeight: '120px', boxSizing: 'border-box' }} value={body} onChange={event => { setBody(event.target.value) }} />
       <p style={{ margin: '8px 0 0' }}>
-        <button disabled={busy} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>{t('save')}</button>{' '}
+        <button disabled={busy} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>💾 {t('save')}</button>{' '}
         <button disabled={busy} onClick={onCancel}>{t('cancel')}</button>
       </p>
     </div>

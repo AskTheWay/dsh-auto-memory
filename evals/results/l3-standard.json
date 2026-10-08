@@ -1,13 +1,14 @@
 {
   "dataset": "standard",
   "model": "deepseek-chat",
-  "date": "2026-10-06T19:26:30.525Z",
-  "produced": 26,
+  "date": "2026-10-08T16:14:19.188Z",
+  "produced": 25,
   "metrics": {
-    "recall": 83.3,
-    "precision": 84.6,
+    "recall": 75,
+    "precision": 80,
     "pollutionRate": 0,
-    "updateCorrect": 100
+    "updateCorrect": 100,
+    "duplicates": 2
   },
   "gold": {
     "durable": 22,

@@ -308,33 +308,10 @@ export function memoryScore(record: MemoryRecord, nowMs: number): number {
 }
 
 /**
- * 描述相似度(Jaccard 词集,纯函数,可测):固化防回声的查重依据——
- * "既有记忆的复述不是新信息",相似度过高的候选跳过而非堆积。
- * CJK 感知:连续中文段按字符二元组(bigram)切分(检索领域标准做法)——
- * 整段单 token 会让中文近重复仅得 ~0.4,防回声对中文完全失效(#5)。
+ * 描述相似度(Jaccard 词集,含 CJK bigram):固化防回声的查重依据。
+ * 0.7.0 起算法单一实现点在 matching.ts,此处再导出以兼容既有导入。
  */
-export function descriptionSimilarity(a: string, b: string): number {
-  const words = (text: string): Set<string> => {
-    const tokens = text.toLowerCase().split(/[^a-z0-9一-鿿]+/).filter(w => w.length > 0)
-    const out = new Set<string>()
-    for (const token of tokens) {
-      if (/^[一-鿿]+$/.test(token)) {
-        // 中文段:bigram(单字短段直接保留)
-        if (token.length === 1) out.add(token)
-        else for (let i = 0; i + 1 < token.length; i++) out.add(token.slice(i, i + 2))
-      } else {
-        out.add(token)
-      }
-    }
-    return out
-  }
-  const wa = words(a)
-  const wb = words(b)
-  if (wa.size === 0 || wb.size === 0) return 0
-  let intersection = 0
-  for (const word of wa) if (wb.has(word)) intersection += 1
-  return intersection / (wa.size + wb.size - intersection)
-}
+export { descriptionSimilarity } from './matching.ts'
 
 /**
  * 记忆存储:管理 memoryDir 下两层目录。

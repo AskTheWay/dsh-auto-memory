@@ -26,7 +26,8 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { MemoryStore } from './store.ts'
-import { normalizeName, asMemoryType, descriptionSimilarity } from './store.ts'
+import { normalizeName, asMemoryType } from './store.ts'
+import { decideConsolidationAction } from './matching.ts'
 import type { MemoryScope, MemoryType } from './types.ts'
 
 // dsh-subagent 在 AgentOptions 上声明的字段(此处同样声明合并,不引入对
@@ -160,6 +161,9 @@ sessions for this user, following these rules:
 - Do NOT persist: one-off task details, anything recoverable from the codebase or
   AGENTS.md, session-specific context.
 - Existing memories (do not duplicate them): ${known}
+- If a fact UPDATES an existing memory, output it with that memory's EXACT
+  existing name — reusing the name replaces the old version; a new name
+  creates a duplicate.
 - Output AT MOST ${maxMemories} items. If nothing is worth persisting, output [].
 - "importance" is 1-10: 8-10 = identity/durable preferences, 5-7 = project facts
   worth keeping, 1-4 = marginal references. Be conservative, not everything is 9.
@@ -274,11 +278,22 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           const candidate = sanitizeCandidate(raw, options.enableUserScope)
           if (candidate === null) continue
           const existingAll = await store.listAll(cwd)
-          // 查重(防回声):同名跳过;或与任何现有描述的词面相似度 ≥0.7 视为复述跳过
-          if (existingAll.some(existing =>
-            existing.name === candidate.name
-            || descriptionSimilarity(existing.description, candidate.description) >= 0.7,
-          )) continue
+          // 同一性判定(0.7.0 更新替换语义):name 锚定/精确同名/描述复述 → 更新
+          // 现有记忆(复用其 name/scope 与生命周期,覆写内容)而非跳过或并存;
+          // 无匹配 → 新建。L3 暴露的两 bug(新旧并存、同义重复)由此闭环。
+          const decision = decideConsolidationAction(candidate, existingAll)
+          if (decision.action === 'update') {
+            await store.write({
+              name: decision.target.name,
+              title: candidate.title ?? undefined,
+              description: candidate.description,
+              type: candidate.type,
+              body: candidate.body,
+              ...(candidate.importance !== undefined ? { importance: candidate.importance } : {}),
+            }, decision.target.scope, cwd)
+            written += 1
+            continue
+          }
           await store.write(candidate, candidate.scope, cwd)
           written += 1
         }

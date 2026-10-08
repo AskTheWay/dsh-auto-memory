@@ -13,7 +13,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { MemoryStore, descriptionSimilarity } from '../../src/store.ts'
+import { MemoryStore } from '../../src/store.ts'
+import { nameCoverage, descriptionCoverage, decideConsolidationAction } from '../../src/matching.ts'
 import { buildConsolidationPrompt, parseCandidates, sanitizeCandidate } from '../../src/consolidate.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -68,9 +69,20 @@ for (const session of dataset.sessions) {
     if (written >= MAX_MEMORIES) break
     const candidate = sanitizeCandidate(raw, true)
     if (candidate === null) continue
-    // 与插件同款查重:同名或描述 Jaccard≥0.7 跳过(旧值保留——更新正确率据此判定)
-    if (existing.some(e => e.name === candidate.name
-      || descriptionSimilarity(e.description, candidate.description) >= 0.7)) continue
+    // 与插件同一条决策路径(decideConsolidationAction):匹配 → 更新现有,否则新建
+    const decision = decideConsolidationAction(candidate, existing)
+    if (decision.action === 'update') {
+      await store.write({
+        name: decision.target.name,
+        title: candidate.title ?? undefined,
+        description: candidate.description,
+        type: candidate.type,
+        body: candidate.body,
+        ...(candidate.importance !== undefined ? { importance: candidate.importance } : {}),
+      }, decision.target.scope, session.cwd)
+      written += 1
+      continue
+    }
     await store.write(candidate, candidate.scope, session.cwd)
     written += 1
   }
@@ -88,52 +100,8 @@ const produced = [
     .map(cwd => store.list('project', cwd))),
 ].flat()
 
-/** 分词(与 descriptionSimilarity 同款,含 CJK bigram)。 */
-function words(text) {
-  const tokens = text.toLowerCase().split(/[^a-z0-9一-鿿]+/).filter(w => w.length > 0)
-  const out = new Set()
-  for (const token of tokens) {
-    if (/^[一-鿿]+$/.test(token)) {
-      if (token.length === 1) out.add(token)
-      else for (let i = 0; i + 1 < token.length; i++) out.add(token.slice(i, i + 2))
-    } else out.add(token)
-  }
-  return out
-}
-
-/**
- * 证据词覆盖率:金标要点词在产物描述中的覆盖比例。
- * 固化产物是完整句子、金标是压缩短语,Jaccard 天然偏低(实测 12-45%),
- * 覆盖率(金标词被产物包含的比例)才是语义命中的正确度量。
- */
-function coverage(goldDescription, producedDescription) {
-  const g = words(goldDescription)
-  if (g.size === 0) return 0
-  const p = words(producedDescription)
-  let hit = 0
-  for (const w of g) if (p.has(w)) hit += 1
-  return hit / g.size
-}
-
+/** 分词/覆盖/name 锚定:0.7.0 起与产品共用 src/matching.ts(单一实现点)。 */
 const HIT_COVERAGE = 0.6
-
-/** 词匹配带前缀容错(≥5 字符前缀相等视为同词:alloc≈allocation)。 */
-function wordHit(a, b) {
-  if (a === b) return true
-  if (a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a))) return true
-  return false
-}
-
-/** name 锚定覆盖:金标 name 的词在产物 name 中的覆盖比例(跨语言稳定:name 恒为英文)。 */
-function nameCoverage(goldName, producedName) {
-  const g = goldName.split('-').filter(w => w.length > 1)
-  if (g.length === 0) return 0
-  const p = producedName.split('-').filter(w => w.length > 1)
-  let hit = 0
-  for (const w of g) if (p.some(x => wordHit(w, x))) hit += 1
-  return hit / g.length
-}
-
 const NAME_COVERAGE = 0.6
 
 /** 固化产物 → 金标映射:name 锚定(≥0.6)或证据词覆盖(≥0.6),取并集。 */
@@ -141,7 +109,7 @@ function mapToGold(memory) {
   for (const fact of [...goldDurable, ...goldUpdated]) {
     if (memory.name === fact.name) return fact
     if (nameCoverage(fact.name, memory.name) >= NAME_COVERAGE) return fact
-    if (coverage(fact.description, memory.description) >= HIT_COVERAGE) return fact
+    if (descriptionCoverage(fact.description, memory.description) >= HIT_COVERAGE) return fact
   }
   return null
 }
@@ -152,12 +120,16 @@ for (const fact of [...goldDurable, ...goldUpdated]) {
   if (hit) captured += 1
 }
 const mapped = produced.map(m => mapToGold(m)).filter(f => f !== null)
+// 重复度(0.7.0 更新替换语义的直接度量):同一金标仍有多条产物 = 新旧并存未替换
+const perGold = new Map()
+for (const f of mapped) perGold.set(f, (perGold.get(f) ?? 0) + 1)
+const duplicates = [...perGold.values()].filter(n => n > 1).length
 
 let pollution = 0
 const pollutionDetail = []
 for (const fact of goldEphemeral) {
   const hit = produced.find(m => m.name === fact.name
-    || coverage(fact.description, m.description) >= HIT_COVERAGE)
+    || descriptionCoverage(fact.description, m.description) >= HIT_COVERAGE)
   if (hit !== undefined) {
     pollution += 1
     pollutionDetail.push(`${fact.name} ← ${hit.name}`)
@@ -170,7 +142,7 @@ let updatedOk = 0
 const updatedDetail = []
 for (const fact of goldUpdated) {
   const any = produced.some(m => m.name === fact.name
-    || coverage(fact.description, m.description) >= HIT_COVERAGE)
+    || descriptionCoverage(fact.description, m.description) >= HIT_COVERAGE)
   if (any) updatedOk += 1
   else updatedDetail.push(fact.name)
 }
@@ -186,7 +158,7 @@ if (process.argv.includes('--dump')) {
   for (const m of produced) console.log(`  [${m.scope}] ${m.name} — ${m.description}`)
   console.log('=== 金标覆盖 ===')
   for (const fact of [...goldDurable, ...goldUpdated]) {
-    const best = produced.map(m => ({ n: m.name, c: coverage(fact.description, m.description) }))
+    const best = produced.map(m => ({ n: m.name, c: descriptionCoverage(fact.description, m.description) }))
       .sort((a, b) => b.c - a.c)[0]
     console.log(`  ${fact.name.padEnd(34)} 最佳:${(best?.n ?? '-').padEnd(38)} ${((best?.c ?? 0) * 100).toFixed(0)}%`)
   }
@@ -200,12 +172,13 @@ const result = {
     precision: Number((precision * 100).toFixed(1)),
     pollutionRate: Number((pollutionRate * 100).toFixed(1)),
     updateCorrect: Number((updateCorrect * 100).toFixed(1)),
+    duplicates,
   },
   gold: { durable: goldDurable.length, updated: goldUpdated.length, ephemeral: goldEphemeral.length },
 }
 console.log(`\n[L3] dataset=${datasetName} model=${MODEL}`)
 console.log(`     固化产物 ${String(produced.length)} 条(金标:durable ${String(goldDurable.length)} / updated ${String(goldUpdated.length)} / ephemeral ${String(goldEphemeral.length)})`)
-console.log(`     recall=${result.metrics.recall}%  precision=${result.metrics.precision}%  污染率=${result.metrics.pollutionRate}%  更新正确率=${result.metrics.updateCorrect}%`)
+console.log(`     recall=${result.metrics.recall}%  precision=${result.metrics.precision}%  污染率=${result.metrics.pollutionRate}%  更新正确率=${result.metrics.updateCorrect}%  重复(未替换)=${String(result.metrics.duplicates)}`)
 await mkdir(join(HERE, '..', 'results'), { recursive: true })
 await writeFile(join(HERE, '..', 'results', `l3-${datasetName}.json`), JSON.stringify(result, null, 2) + '\n', 'utf8')
 await rm(root, { recursive: true, force: true })

@@ -1,13 +1,14 @@
 {
   "dataset": "mini",
   "model": "deepseek-chat",
-  "date": "2026-10-06T19:26:11.231Z",
-  "produced": 10,
+  "date": "2026-10-08T16:14:25.439Z",
+  "produced": 8,
   "metrics": {
     "recall": 100,
-    "precision": 70,
+    "precision": 87.5,
     "pollutionRate": 0,
-    "updateCorrect": 100
+    "updateCorrect": 100,
+    "duplicates": 0
   },
   "gold": {
     "durable": 6,

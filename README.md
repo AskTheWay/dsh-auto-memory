@@ -25,6 +25,29 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
+## What's new in 0.7.0 (P3)
+
+- **Update-replace semantics**: consolidation no longer coexists new and old
+  versions of the same fact. A name-anchored matcher (prefix-tolerant token
+  coverage, order-insensitive — `ignore-err-x` matches `err-x-ignore`) plus
+  description-echo matching now routes matched candidates to an in-place
+  UPDATE (reusing the existing name/scope and lifecycle) instead of skipping
+  or duplicating. The consolidation prompt also instructs the model to reuse
+  the existing name when updating.
+- **Matching core shared with the eval harness** (`src/matching.ts`): the
+  L3-validated mapping (name anchoring ∪ CJK-bigram coverage) is now the
+  single implementation used by both product and runner — evaluation
+  methodology feeding back into product, round three.
+- **New L3 metric — duplicates**: counts gold facts still covered by >1
+  produced memory (un-replaced coexistence). After the change: mini 0
+  (was 1), standard products 26→25 with 2 remaining; precision 70→87.5%
+  (mini). Recall on standard dipped to 75% in this single run — recorded
+  honestly, run-to-run variance unmeasured.
+- **Panel UX pass**: overview header (totals + pinned/muted + budget bar),
+  colored type badges (user/feedback/project/reference), search filter,
+  relative timestamps ("3 d ago"), icon actions (✏️📌🔇🗑), empty-state
+  3-step onboarding, per-group summary lines, current-workspace ✅ badge.
+
 ## What's new in 0.6.0 (P2)
 
 - **Harness-sessions evaluation datasets** (`evals/datasets/`): synthetic
