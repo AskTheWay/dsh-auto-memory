@@ -176,7 +176,9 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
           name,
           title: typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim().slice(0, 80) : undefined,
           ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
-          ...(body.disabled === true ? { disabled: true } : {}),
+          // 停用必须双向透传:只透传 true 会让"取消停用"被丢弃,
+          // store 的继承语义随即永远保留旧值(面板停用无反应的根因)
+          ...(body.disabled !== undefined ? { disabled: body.disabled } : {}),
           description: body.description.trim().slice(0, 160),
           type: body.type,
           body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',

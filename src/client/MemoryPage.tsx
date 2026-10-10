@@ -71,6 +71,27 @@ const TYPE_BADGE: Record<string, { label: string; style: React.CSSProperties }> 
 /** 小徽章通用形状。 */
 const BADGE_STYLE: React.CSSProperties = { display: 'inline-block', fontSize: '10px', lineHeight: '16px', padding: '0 6px', borderRadius: '4px', verticalAlign: '1px', fontWeight: 600, letterSpacing: '.02em' }
 
+/** 状态徽章:生效(绿)/已停用(灰)——一眼分辨哪些记忆会被注入。 */
+const STATE_ACTIVE: React.CSSProperties = { ...BADGE_STYLE, background: 'rgba(34,197,94,.15)', color: '#16a34a' }
+const STATE_MUTED: React.CSSProperties = { ...BADGE_STYLE, background: 'rgba(148,163,184,.25)', color: '#64748b' }
+
+/**
+ * 行级视觉编码(左侧 3px 色条 + 底色),状态优先:
+ * 停用 = 灰实条 + 灰底 + 降不透明度;置顶 = 琥珀条 + 微琥珀底;
+ * 普通生效 = 类型色条(与类型徽章同色,行与徽章互相印证)。
+ */
+function rowVisual(memory: PanelMemory): React.CSSProperties {
+  const base: React.CSSProperties = { ...ROW_STYLE, borderLeft: '3px solid', paddingLeft: '8px', borderRadius: '2px' }
+  const typeColor = (TYPE_BADGE[memory.type] ?? TYPE_BADGE.reference).style.color
+  if (memory.disabled) {
+    return { ...base, borderLeftColor: 'rgba(148,163,184,.7)', background: 'rgba(148,163,184,.1)', opacity: 0.6 }
+  }
+  if (memory.pinned) {
+    return { ...base, borderLeftColor: '#d97706', background: 'rgba(245,158,11,.07)' }
+  }
+  return { ...base, borderLeftColor: typeColor }
+}
+
 /** 相对时间(纯函数,渲染时求值)。 */
 function relativeTime(ms: number | undefined, now: number, t: Translate): string | null {
   if (ms === undefined) return null
@@ -148,7 +169,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
     }
   }
 
-  /** 读正文后整条重写的切换(pin/mute 共用;失败中止防清空正文)。 */
+  /** 读正文后整条重写的切换(pin/mute 共用;失败把错误上屏,绝不静默)。 */
   const toggleFlag = (group: PanelGroup, memory: PanelMemory, field: 'pinned' | 'disabled'): void => {
     void (async () => {
       try {
@@ -160,8 +181,9 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
           disabled: field === 'disabled' ? !memory.disabled : memory.disabled,
         }))
       } catch (error) {
+        // 项目组非当前工作区时 read 会 400(无 cwd)——必须让用户看见,而非无声吞掉
         console.warn('[auto-memory] read failed, toggle aborted', error)
-        await load()
+        setActionError(t('saveFailed'))
       }
     })()
   }
@@ -254,13 +276,11 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
               const badge = TYPE_BADGE[memory.type] ?? TYPE_BADGE.reference
               const when = relativeTime(memory.updatedMs, now, t)
               return (
-                <div key={memory.name} style={{ ...ROW_STYLE, opacity: memory.disabled ? 0.55 : 1 }}>
+                <div key={memory.name} style={rowVisual(memory)}>
                   <span style={{ minWidth: 0, flex: 1 }}>
                     <strong>{memory.title ?? memory.name}</strong>
-                    {memory.pinned && <span title={t('pinned')}> 📌</span>}
-                    {memory.disabled && <span title={t('muted')}> 🔇</span>}
                     {' '}<span style={{ ...BADGE_STYLE, ...badge.style }}>{badge.label}</span>
-                    {' '}<code style={{ fontSize: '11px', opacity: 0.7 }}>{memory.name}</code>
+                    {' '}<span style={memory.disabled ? STATE_MUTED : STATE_ACTIVE}>{memory.disabled ? `⊘ ${t('muted')}` : `● ${t('activeState')}`}</span>
                     <br />
                     <span style={{ fontSize: '13px', opacity: 0.85 }}>{memory.description}</span>
                     <span style={{ fontSize: '11px', opacity: 0.55 }}> · {memory.reads} {t('reads')}{when !== null ? ` · ${when}` : ''}</span>
