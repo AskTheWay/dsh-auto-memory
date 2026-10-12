@@ -50,14 +50,64 @@ const GROUP_STYLE: React.CSSProperties = { margin: '16px 0', padding: '12px', bo
 const BAR_STYLE: React.CSSProperties = { height: '6px', borderRadius: '3px', background: 'rgba(128,128,128,.3)', overflow: 'hidden', margin: '6px 0' }
 const ROW_STYLE: React.CSSProperties = { display: 'flex', gap: '8px', alignItems: 'baseline', padding: '6px 0', borderBottom: '1px solid rgba(128,128,128,.15)' }
 
-/** 悬浮编辑器容器:官方主题变量(--dsw-alias-*)+ 半透明灰回退,深浅主题均可读。 */
+/**
+ * 编辑器浮层:遵循官方 elevation 规范(border: 0 + --dsw-elevation-prominent
+ * 阴影层级),底色走主题分层(bg-layer-2)而非硬编码灰;变量缺失时回退深色半透明。
+ */
 const EDITOR_STYLE: React.CSSProperties = {
-  ...GROUP_STYLE,
   position: 'sticky',
   bottom: '12px',
-  background: 'var(--dsw-alias-bg-overlay, rgba(127,127,127,0.65))',
-  backdropFilter: 'blur(6px)',
+  padding: '16px',
+  borderRadius: '12px',
+  border: 0,
+  background: 'var(--dsw-alias-bg-layer-2, rgba(32,34,40,.94))',
+  backdropFilter: 'blur(10px)',
+  boxShadow: 'var(--dsw-elevation-prominent, 0 3px 8px rgba(0,0,0,.14), 0 0 20px rgba(0,0,0,.18))',
   color: 'var(--dsw-alias-label-primary, inherit)',
+}
+
+/** 表单输入控件:主题分层底 + 分层描边,圆角填充式(标题/摘要/正文/搜索框共用)。 */
+const FIELD_STYLE: React.CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '8px 10px',
+  borderRadius: '8px',
+  border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
+  background: 'var(--dsw-alias-bg-layer-1, transparent)',
+  color: 'var(--dsw-alias-label-primary, inherit)',
+  font: 'inherit',
+  outline: 'none',
+}
+
+/** 字段标签:小号弱化字(caption 层级),与输入框拉开视觉主次。 */
+const FIELD_LABEL: React.CSSProperties = {
+  margin: '10px 0 6px',
+  fontSize: '11px',
+  letterSpacing: '.05em',
+  color: 'var(--dsw-alias-label-caption, rgba(128,128,128,.9))',
+}
+
+/** 主操作按钮(保存):主题主按钮填充色 + 前景字色。 */
+const BTN_PRIMARY: React.CSSProperties = {
+  padding: '6px 18px',
+  borderRadius: '8px',
+  border: 0,
+  cursor: 'pointer',
+  font: 'inherit',
+  fontWeight: 600,
+  background: 'var(--dsw-alias-button-primary-fill, #3b6ef5)',
+  color: 'var(--dsw-alias-label-primary-foreground, #fff)',
+}
+
+/** 次操作按钮(取消):幽灵式,透明底 + 分层描边 + 次级字色。 */
+const BTN_GHOST: React.CSSProperties = {
+  padding: '6px 18px',
+  borderRadius: '8px',
+  cursor: 'pointer',
+  font: 'inherit',
+  background: 'transparent',
+  border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4))',
+  color: 'var(--dsw-alias-label-secondary, inherit)',
 }
 
 /** 类型徽章配色(半透明底 + 深字,深浅主题均可读)。 */
@@ -210,7 +260,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
       <p style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={() => { void load() }} disabled={busy}>↻ {t('refresh')}</button>
         <input
-          style={{ flex: '1 1 200px', minWidth: '160px', padding: '4px 8px', borderRadius: '4px', border: '1px solid rgba(128,128,128,.4)', background: 'transparent', color: 'inherit' }}
+          style={{ ...FIELD_STYLE, flex: '1 1 200px', minWidth: '160px', padding: '4px 10px' }}
           placeholder={t('searchPlaceholder')} value={filter} onChange={event => { setFilter(event.target.value) }}
         />
         {actionError !== null && <span style={{ color: '#d97706' }}>{actionError}</span>}
@@ -330,20 +380,19 @@ function MemoryEditor({ t, initial, initialBody, busy, onSave, onCancel }: {
   const [body, setBody] = useState(initialBody)
   return (
     <div style={EDITOR_STYLE}>
-      <h3 style={{ margin: 0 }}>✏️ {t('edit')}: <code>{initial.name}</code></h3>
-      <p style={{ margin: '8px 0' }}>
-        {t('titleField')}:{' '}
-        <input style={{ width: '60%' }} value={title} onChange={event => { setTitle(event.target.value) }} />
-      </p>
-      <p style={{ margin: '8px 0' }}>
-        {t('descriptionField')}:{' '}
-        <input style={{ width: '80%' }} value={description} onChange={event => { setDescription(event.target.value) }} />
-      </p>
-      <p style={{ margin: '8px 0' }}>{t('bodyField')}:</p>
-      <textarea style={{ width: '100%', minHeight: '120px', boxSizing: 'border-box' }} value={body} onChange={event => { setBody(event.target.value) }} />
-      <p style={{ margin: '8px 0 0' }}>
-        <button disabled={busy} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>💾 {t('save')}</button>{' '}
-        <button disabled={busy} onClick={onCancel}>{t('cancel')}</button>
+      <h3 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span style={{ display: 'inline-block', width: '3px', height: '15px', borderRadius: '2px', background: 'var(--dsw-alias-brand-primary, #3b6ef5)' }} />
+        {t('edit')}: <code style={{ fontWeight: 500 }}>{initial.name}</code>
+      </h3>
+      <p style={FIELD_LABEL}>{t('titleField')}</p>
+      <input style={FIELD_STYLE} value={title} onChange={event => { setTitle(event.target.value) }} />
+      <p style={FIELD_LABEL}>{t('descriptionField')}</p>
+      <input style={FIELD_STYLE} value={description} onChange={event => { setDescription(event.target.value) }} />
+      <p style={FIELD_LABEL}>{t('bodyField')}</p>
+      <textarea style={{ ...FIELD_STYLE, minHeight: '140px', resize: 'vertical' }} value={body} onChange={event => { setBody(event.target.value) }} />
+      <p style={{ margin: '14px 0 0', display: 'flex', gap: '8px' }}>
+        <button disabled={busy} style={BTN_PRIMARY} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>💾 {t('save')}</button>
+        <button disabled={busy} style={BTN_GHOST} onClick={onCancel}>{t('cancel')}</button>
       </p>
     </div>
   )
