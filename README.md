@@ -25,115 +25,13 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ---
 
-## What's new in 0.7.0 (P3)
+## Highlights
 
-- **Update-replace semantics**: consolidation no longer coexists new and old
-  versions of the same fact. A name-anchored matcher (prefix-tolerant token
-  coverage, order-insensitive — `ignore-err-x` matches `err-x-ignore`) plus
-  description-echo matching now routes matched candidates to an in-place
-  UPDATE (reusing the existing name/scope and lifecycle) instead of skipping
-  or duplicating. The consolidation prompt also instructs the model to reuse
-  the existing name when updating.
-- **Matching core shared with the eval harness** (`src/matching.ts`): the
-  L3-validated mapping (name anchoring ∪ CJK-bigram coverage) is now the
-  single implementation used by both product and runner — evaluation
-  methodology feeding back into product, round three.
-- **New L3 metric — duplicates**: counts gold facts still covered by >1
-  produced memory (un-replaced coexistence). After the change: mini 0
-  (was 1), standard products 26→25 with 2 remaining; precision 70→87.5%
-  (mini). Recall on standard dipped to 75% in this single run — recorded
-  honestly, run-to-run variance unmeasured.
-- **Panel UX pass**: overview header (totals + pinned/muted + budget bar),
-  colored type badges (user/feedback/project/reference), search filter,
-  relative timestamps ("3 d ago"), icon actions (✏️📌🔇🗑), empty-state
-  3-step onboarding, per-group summary lines, current-workspace ✅ badge.
-
-## What's new in 0.6.0 (P2)
-
-- **Harness-sessions evaluation datasets** (`evals/datasets/`): synthetic
-  multi-session developer transcripts with gold-label facts — durable /
-  ephemeral-trap / updated labels, evidence sessions, abstention probes.
-  The coding-agent memory scenario no public benchmark covers.
-- **L1 injection recall** (zero-API runner): 100% on both datasets at the
-  perfect-consolidation ceiling — the injection side loses nothing.
-- **L3 consolidation quality** (one LLM call per session, same code path as
-  the plugin): **mini recall 100% / update-correctness 100% / pollution 0%;
-  standard recall 83.3% / precision 84.6% / update-correctness 100% /
-  pollution 0%** (deepseek-chat, temperature 0). Ephemeral traps were
-  correctly refused in every run.
-- **Product fix surfaced by the eval**: consolidation now writes
-  title/description in the transcript's language (Chinese transcripts used
-  to produce English memories — measured, then fixed).
-- Community: soft-mute (third state between keep and delete, #10), panel
-  current-workspace fix (#9), CJK bigram echo-dedup (#5), editor busy/error
-  UX (#8), GB11643 checksum before id-card redaction (#7).
-
-## What's new in 0.5.0 (P2)
-
-- **Three-factor ranking** (Generative Agents formula, embedding-free):
-  injection index and memory_list now order by pin → importance × recency
-  (0.995^days, day-granular so the index text stays stable within a day for
-  KV-prefix caches). Auto-consolidation has the model assign importance 1-10;
-  types carry sensible defaults.
-- **Security pack**: every write path now passes through redaction
-  ([REDACTED:github-token/npm-token/openai-key/aws-key/phone/id-card] — the
-  exact shapes that leaked in this project's own history) and protocol-tag
-  escaping — the injected section is wrapped in <memory_context> and content
-  can no longer forge the wrapper. Consolidation dedupes near-identical
-  descriptions (Jaccard ≥ 0.7) instead of piling up echoes.
-- Eval arc completes: probe retention under half-budget pressure is now
-  **38% (positional) → 80% (pinned) → ≥90% (three-factor, unpinned)** — same
-  budget, same seed, better memories.
-
-## What's new in 0.4.0 (P2)
-
-- **Web UI memory panel** (the screenshot above): a dual-half plugin — the host
-  registers authenticated `/api/auto-memory/*` routes over the existing locked
-  store, the browser half registers a sidebar entry and a management page
-  (grouped list with types/pins/read counts, per-scope capacity bars with
-  budget warnings, inline editing, pin toggle, delete-with-confirm). Works in
-  Web and desktop clients from one bundle; non-Web compositions stay no-op.
-- Panel bugfixes: routes now register via a connection-ready callback (host
-  load order used to skip them), and the editor uses official theme variables
-  (`--dsw-alias-*`) instead of a hardcoded white — readable in dark mode.
-- Package hygiene: the browser half ships as `lib/client.js` (17 kB) behind a
-  `dsh.client` manifest; total install stays ~32 kB with zero runtime deps.
-
-## What's new in 0.3.0 (P2)
-
-- **Pinned memories** (`pinned: true` on memory_write): pinned entries lead
-  the index, survive budget truncation, and are exempt from staleness
-  eviction — a trust anchor the user controls.
-- **Eval-driven fix**: the injection budget now covers the *whole* section
-  (index + guidance); it used to overshoot by ~800 bytes. Caught by the new
-  deterministic evaluation layer on its first run.
-- **Deterministic eval layer** ([evals/](evals/README.md)) in CI: injection
-  budget curves, eviction zero-misfire, link-expansion bounds, and a
-  signal-to-noise characterization — which pinned-priority truncation then
-  improved from **38% → ≥80% probe retention** under half-budget pressure.
-  Same budget, better memories.
-
-## What's new in 0.2.0 (P1)
-
-- **Auto-consolidation** (`autoSummarize: true`): when a root session ends, a
-  background LLM pass extracts durable new facts from the session and files
-  them as memories — deduplicated, capped, fully silent on failure. Claude
-  Code doesn't do this automatically.
-- **Forgetting & eviction**: every memory carries lifecycle metadata
-  (created/updated/reads); `memory_read` counts references; `staleAfterDays`
-  soft-hides zero-reference stale memories from the injected index (files
-  kept); `memory_prune` lists (dry-run) or deletes aged memories.
-- **Recall expansion**: `memory_read` resolves `[[name]]` cross-links one
-  level and attaches linked summaries.
-- `memory_delete_all` — guarded by `tools/pre-execute` **human approval**:
-  the model cannot self-confirm irreversible bulk deletes.
-- Hardened by a second adversarial review (11 agents): single-lock `clear`
-  (no concurrent-write escape), conditional index rebuild on `touch`
-  (no O(N) amplification), session-start stale refresh, subagent capture
-  cleanup, abortable consolidation.
-
-Tools: `memory_write` / `memory_read` / `memory_list` / `memory_delete` /
-`memory_prune` / `memory_delete_all`.
+**0.7 — update-replace semantics**: consolidation updates facts in place
+instead of piling up near-duplicates, with a matching core shared between
+product and eval harness. Verified against the official desktop client
+(0.2.0-rc.2). Full history: [CHANGELOG.md](CHANGELOG.md) ·
+[Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 
 ## Claude Code has this. dsh didn't. Now it does.
 
@@ -223,7 +121,7 @@ no LLM, fully reproducible:
 This evaluation layer already caught a real bug: the byte budget used to
 exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).
 
-**78 tests (incl. a deterministic eval layer). 0 runtime deps beyond `yaml`. 15 kB installed.**
+**106 tests + three eval layers (L0 deterministic / L1 recall / L3 consolidation). 0 runtime deps beyond `yaml`, ~32 kB installed.**
 
 ## Install
 
@@ -233,7 +131,8 @@ dsh --profile demo                               # restart the profile
 ```
 
 From source: `npm install && npm run build && dsh plugin --profile demo add /abs/path`.
-Requires `@deepseek-ai/dsh >= 0.1.5-rc.2` (Node `^22.19 || >=24`).
+Requires `@deepseek-ai/dsh >= 0.1.5-rc.2` (Node `^22.19 || >=24`). Works with
+the official desktop client — verified on 0.2.0-rc.2.
 
 ## Configuration
 
@@ -269,7 +168,14 @@ Deep dives: [design decisions](docs/design.md) ·
 
 - [x] P0 — typed store, four tools, prompt injection, scoped layers, crash safety
 - [x] P1 — auto-consolidation on session end, forgetting & eviction, recall expansion, human-gated bulk delete
-- [ ] P2 — Web UI memory cards, token-cost / recall-quality benchmarks
+- [x] P2 — Web UI memory panel, token-cost / recall-quality benchmarks
+- [x] P3 — update-replace semantics, matching core shared with the eval harness
+- [ ] Injection audit log ([#11](https://github.com/AskTheWay/dsh-auto-memory/issues/11)), L2 end-to-end eval
+
+## Changelog
+
+Per-version notes: [CHANGELOG.md](CHANGELOG.md) ·
+[GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 
 ## License
 

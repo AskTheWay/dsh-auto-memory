@@ -13,7 +13,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # npm 发布后按 tag 建 GitHub Release(notes 取自 CHANGELOG.md)
       id-token: write # npm --provenance 出处签名
     steps:
       - uses: actions/checkout@v4
@@ -37,3 +37,16 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Extract release notes for this tag
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v ver="$ver" 'BEGIN{head="## [" ver "]"} /^## /{in_section=(substr($0,1,length(head))==head)} in_section{print}' CHANGELOG.md | sed '1d' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "(no CHANGELOG entry for ${GITHUB_REF_NAME})" > release-notes.md
+          fi
+          cat release-notes.md
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
