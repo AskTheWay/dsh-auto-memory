@@ -25,9 +25,11 @@ import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MemoryStore } from './store.ts'
 import { normalizeName, asMemoryType } from './store.ts'
 import { decideConsolidationAction } from './matching.ts'
+import { collectInstructionDigest } from './instructions.ts'
 import type { MemoryScope, MemoryType } from './types.ts'
 
 // dsh-subagent 在 AgentOptions 上声明的字段(此处同样声明合并,不引入对
@@ -148,18 +150,36 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean): 
   }
 }
 
-/** 组装给固化模型的指令(含已有记忆名以避免重复)。 */
-export function buildConsolidationPrompt(existingNames: string[], transcript: string, maxMemories: number): string {
+/**
+ * 组装给固化模型的指令(含已有记忆名以避免重复)。
+ * instructionsDigest(0.7.2):工作区指令链(AGENTS.md/CLAUDE.md)摘要——固化
+ * 模型看不到基线消息(转写只含 user/assistant 文本),喂摘要使其知悉指令链
+ * 已记载的约束,避免把"代码注释用中文"这类稳定约束再固化成记忆(分诊规则:
+ * 人写稳定约束→AGENTS.md,模型动态事实→记忆,同一事实只落一处)。
+ */
+export function buildConsolidationPrompt(existingNames: string[], transcript: string, maxMemories: number, instructionsDigest?: string): string {
   const known = existingNames.length > 0 ? existingNames.join(', ') : '(none)'
+  const instructions = instructionsDigest !== undefined && instructionsDigest.trim().length > 0
+    ? `The workspace instruction files below are ALREADY injected into every session of this
+user. NEVER persist anything they record — that would duplicate a constraint the user
+maintains by hand in AGENTS.md/CLAUDE.md:
+
+<workspace-instructions>
+${instructionsDigest}
+</workspace-instructions>
+
+`
+    : ''
   return `You are the memory-consolidation step of a coding agent. Below is a transcript
 summary of a session that just ended. Extract NEW facts worth persisting across
 sessions for this user, following these rules:
 
-- Persist: who the user is (role, expertise, durable preferences); corrections or
+${instructions}- Persist: who the user is (role, expertise, durable preferences); corrections or
   confirmations about how to work; ongoing goals/constraints with absolute dates;
   external resources worth returning to.
 - Do NOT persist: one-off task details, anything recoverable from the codebase or
-  AGENTS.md, session-specific context.
+  AGENTS.md, session-specific context, anything the workspace instructions above
+  already record.
 - Existing memories (do not duplicate them): ${known}
 - If a fact UPDATES an existing memory, output it with that memory's EXACT
   existing name — reusing the name replaces the old version; a new name
@@ -238,10 +258,14 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
     const task = (async (): Promise<void> => {
       try {
         const existing = await store.listAll(cwd)
+        // 工作区指令链摘要(0.7.2):固化模型看不到基线消息,喂摘要防重复固化;
+        // 读取失败静默降级为无摘要,绝不影响固化本身
+        const digest = await collectInstructionDigest(cwd, resolveDshHome())
         const prompt = buildConsolidationPrompt(
           existing.map(r => r.name),
           cap.lines.join('\n\n'),
           options.autoSummarizeMaxMemories,
+          digest,
         )
         const assembler = new BlockAssembler()
         const request: GenerateOptions = {

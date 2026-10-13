@@ -92,6 +92,8 @@ Rules:
 - Before writing, check the index above: if an existing entry already covers the
   fact, update it by reusing the same name instead of creating a near-duplicate.
 - Do not store what the codebase, AGENTS.md/CLAUDE.md, or project docs already record.
+- Stable constraints live in the injected AGENTS.md/CLAUDE.md instruction chain,
+  maintained by the user by hand — never duplicate them into memories.
 - Cross-link related memories with [[name]] in the body.
 - Pin a memory (pinned: true) only when the user explicitly asks to keep it
   forever — pinned entries lead the index, survive truncation and eviction.

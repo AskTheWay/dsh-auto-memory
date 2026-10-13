@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [0.7.2] - 2026-10-14
+
+### Added
+
+- **Consolidation now sees the workspace instruction chain**: before the
+  end-of-session LLM pass, the plugin discovers AGENTS.md/CLAUDE.md files by
+  the same rules as the official `dsh-agent-instructions` layer (user-global
+  `$DSH_HOME/AGENTS.md` → project root (`.git` marker) → session cwd, `.local`
+  overlays, same-directory trimmed-duplicate dedup) and feeds a bounded digest
+  (≤ 2 KB) into the consolidation prompt. Facts already recorded in
+  instruction files are no longer re-consolidated as memories — enforcing the
+  "hand-written constraints live in AGENTS.md, model-managed facts live in
+  memory, one fact in exactly one place" split. Read failures degrade
+  silently to no-digest; consolidation is never affected.
+- Injection policy gains the matching rule (stable constraints belong in the
+  injected instruction chain, never duplicated into memories).
+
+### Fixed
+
+- Hardened by an adversarial review (8 agents, findings verified by
+  reproduction): literal `</workspace-instructions>` in instruction content is
+  escaped so repository-controlled text cannot close the plugin-owned prompt
+  frame and smuggle top-level directives into persistent memories (mirrors
+  upstream `escapeInstructionFrameBody` and this repo's `stripMemoryTags`
+  discipline); project-root discovery is fully async (no event-loop blocking
+  on UNC shares or offline mapped drives); files over 1 MB are skipped whole
+  (upstream `maxSourceBytes` semantics — no unbounded read before
+  truncation); empty instruction files no longer consume digest budget.
+
 ## [0.7.1] - 2026-10-10
 
 ### Fixed
@@ -212,3 +241,4 @@ page (generated from this file at publish time).
 [0.6.1]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.6.1
 [0.7.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.0
 [0.7.1]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.1
+[0.7.2]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.2

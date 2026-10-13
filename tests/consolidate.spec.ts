@@ -102,4 +102,18 @@ describe('buildConsolidationPrompt', () => {
     expect(prompt).toContain('AT MOST 5')
     expect(prompt).toContain('USER: hi')
   })
+  it('0.7.2 指令链摘要:传入 digest 时注入 workspace-instructions 段与防重复措辞', () => {
+    const prompt = buildConsolidationPrompt([], 'USER: hi', 5, '--- /x/AGENTS.md ---\n中文注释规则')
+    expect(prompt).toContain('<workspace-instructions>')
+    expect(prompt).toContain('中文注释规则')
+    expect(prompt).toContain('NEVER persist')
+  })
+  it('未传 digest(向后兼容,如 L3 runner 旧调用)→ 无 workspace-instructions 段', () => {
+    const prompt = buildConsolidationPrompt([], 'USER: hi', 5)
+    expect(prompt).not.toContain('<workspace-instructions>')
+  })
+  it('空白 digest 视为未传(不注入空段)', () => {
+    const prompt = buildConsolidationPrompt([], 'USER: hi', 5, '   \n  ')
+    expect(prompt).not.toContain('<workspace-instructions>')
+  })
 })
