@@ -52,6 +52,15 @@ interface ImportScanProject {
   targetDir: string
 }
 
+/** 注入审计统计(audit.stats 响应形状,0.9.0;truncatedCount/avgBytes 为 0.9.1 新增,旧宿主缺失时按 0 兜底)。 */
+interface AuditStatsFace {
+  sessions: number
+  injections: number
+  avgBytes?: number
+  memories: Array<{ name: string; injectedCount: number; truncatedCount?: number; lastTs: number }>
+  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number }>
+}
+
 /** 导入弹层状态机。 */
 type ImportState =
   | { phase: 'loading' }
@@ -173,8 +182,123 @@ function relativeTime(ms: number | undefined, now: number, t: Translate): string
   return t('daysAgo', { n: Math.floor(hours / 24) })
 }
 
+/**
+ * 注入统计区样式(纯手绘 CSS,浏览器半禁三方库):
+ * 指标卡用弱蓝底 + 细描边拉开层次;注入榜用点阵而非横条——每次注入一个点,
+ * 同分条目天然排成整齐的一行(横条在全同分时全满、没有区分度,看起来就"丑");
+ * 时间轴用左边线 + 圆点,最新一条强调蓝。
+ */
+const STATS_METRIC: React.CSSProperties = {
+  flex: '1 1 96px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  padding: '8px 10px',
+  borderRadius: 8,
+  background: 'rgba(96,165,250,.07)',
+  border: '1px solid rgba(96,165,250,.16)',
+}
+const STATS_LABEL: React.CSSProperties = { margin: '10px 0 4px', fontSize: 11, opacity: 0.7, letterSpacing: '.02em' }
+const STATS_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid rgba(128,128,128,.12)' }
+const STATS_NAME: React.CSSProperties = { fontSize: 11, flex: '0 1 40%', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const STATS_COUNT: React.CSSProperties = { fontSize: 10, opacity: 0.65, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }
+const STATS_TRUNC_BADGE: React.CSSProperties = { fontSize: 10, lineHeight: '16px', padding: '0 6px', borderRadius: 999, background: 'rgba(217,119,6,.15)', color: '#d97706', fontWeight: 600 }
+
+/** 注入统计主体:概览指标 + 注入点阵榜 + 截断榜 + 时间轴。 */
+function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; now: number }): ReactNode {
+  type StatsMemory = AuditStatsFace['memories'][number]
+  const total = stats.memories.length
+  const dotCount = Math.min(stats.injections, 20)
+  const allFull = total > 0 && stats.memories.every(m => m.injectedCount === stats.injections)
+  const ranked = stats.memories.slice(0, 8)
+  const rest = stats.memories.slice(8)
+  const truncated = stats.memories
+    .filter(m => (m.truncatedCount ?? 0) > 0)
+    .sort((a, b) => (b.truncatedCount ?? 0) - (a.truncatedCount ?? 0))
+  const avgBytes = stats.avgBytes
+    ?? (stats.timeline.length > 0 ? Math.round(stats.timeline.reduce((sum, e) => sum + e.bytes, 0) / stats.timeline.length) : 0)
+
+  /** 一行注入榜:名字 + 点阵(每次注入一点) + 比例 + 截断徽章。 */
+  const rankRow = (m: StatsMemory): ReactNode => (
+    <div key={m.name} style={STATS_ROW}>
+      <code title={m.name} style={STATS_NAME}>{m.name}</code>
+      <span title={`${m.injectedCount}/${stats.injections}`} style={{ display: 'flex', alignItems: 'center', gap: 3, flex: '1 1 auto', minWidth: 0, overflow: 'hidden' }}>
+        {Array.from({ length: dotCount }, (_, i) => (
+          <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', flex: '0 0 6px', background: i < m.injectedCount ? '#60a5fa' : 'rgba(128,128,128,.22)' }} />
+        ))}
+        {stats.injections > dotCount && <span style={{ fontSize: 10, opacity: 0.6 }}>…</span>}
+      </span>
+      <span style={STATS_COUNT}>{m.injectedCount}/{stats.injections}</span>
+      {(m.truncatedCount ?? 0) > 0 && <span style={{ ...STATS_TRUNC_BADGE, whiteSpace: 'nowrap' }}>⚠ {m.truncatedCount}</span>}
+    </div>
+  )
+
+  return (
+    <details style={GROUP_STYLE}>
+      <summary style={{ cursor: 'pointer' }}>
+        📊 {t('statsTitle')} — {stats.sessions} {t('statsSessions')} · {stats.injections} {t('statsInjections')}
+      </summary>
+
+      {/* 概览:三段指标卡(会话数 / 注入段数 / 平均段体积) */}
+      <div style={{ display: 'flex', gap: 10, margin: '12px 0 2px', flexWrap: 'wrap' }}>
+        {[
+          { value: String(stats.sessions), label: t('statsSessions') },
+          { value: String(stats.injections), label: t('statsInjections') },
+          { value: `${(avgBytes / 1024).toFixed(1)}K`, label: t('statsAvg') },
+        ].map(metric => (
+          <div key={metric.label} style={STATS_METRIC}>
+            <strong style={{ fontSize: 18, fontWeight: 650, fontVariantNumeric: 'tabular-nums' }}>{metric.value}</strong>
+            <span style={{ fontSize: 10, opacity: 0.65 }}>{metric.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* 注入榜:点阵 + 比例;全同分时给一句摘要,避免"全是 3×"的呆板 */}
+      <p style={STATS_LABEL}>{t('statsTopInjected')}</p>
+      {allFull && <p style={{ margin: '0 0 6px', fontSize: 11, opacity: 0.65 }}>{t('statsAllInjected', { n: total, m: stats.injections })}</p>}
+      {ranked.map(rankRow)}
+      {rest.length > 0 && (
+        <details style={{ marginTop: 4 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 11, opacity: 0.65 }}>{t('statsAll', { n: total })}</summary>
+          {rest.map(rankRow)}
+        </details>
+      )}
+
+      {/* 截断榜:被预算挤出注入的记忆——注入集合稳定时这里才是区分度 */}
+      {truncated.length > 0 && (
+        <>
+          <p style={STATS_LABEL}>{t('statsTruncatedTop')}</p>
+          {truncated.map(m => (
+            <div key={m.name} style={STATS_ROW}>
+              <code title={m.name} style={STATS_NAME}>{m.name}</code>
+              <span style={{ flex: '1 1 auto' }} />
+              <span style={{ ...STATS_COUNT, color: '#d97706', opacity: 1 }}>⚠ {m.truncatedCount}</span>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* 时间轴:左边线 + 圆点,最新一条强调蓝 */}
+      <p style={STATS_LABEL}>{t('statsTimeline')}</p>
+      <div style={{ borderLeft: '2px solid rgba(128,128,128,.22)', marginLeft: 4, paddingLeft: 12, maxHeight: 220, overflowY: 'auto' }}>
+        {stats.timeline.slice(-8).reverse().map((e, index) => (
+          <div key={`${e.sessionId}-${e.ts}`} style={{ position: 'relative', padding: '4px 0' }}>
+            <span style={{ position: 'absolute', left: -17, top: 9, width: 7, height: 7, borderRadius: '50%', background: index === 0 ? '#60a5fa' : 'rgba(128,128,128,.45)' }} />
+            <div style={{ display: 'flex', gap: 8, fontSize: 11, alignItems: 'baseline' }}>
+              <span style={{ opacity: 0.7, whiteSpace: 'nowrap' }}>{relativeTime(e.ts, now, t)}</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.cwd}>{(e.cwd.split(/[\\/]/).pop() ?? e.cwd) || '—'}</span>
+              {e.truncated > 0 && <span style={{ ...STATS_TRUNC_BADGE, whiteSpace: 'nowrap' }}>⚠ {t('statsTruncated')}{e.truncated}</span>}
+            </div>
+            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 1 }}>{e.count} {t('statsMemories')} · {(e.bytes / 1024).toFixed(1)}K</div>
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
-export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importRun }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importRun, auditStats }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   const [error, setError] = useState(false)
@@ -183,6 +307,8 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState('')
   const [now, setNow] = useState(() => Date.now())
+  /** 注入审计统计(0.9.0;取不到时静默无统计区——审计绝不影响面板可用性)。 */
+  const [stats, setStats] = useState<AuditStatsFace | null>(null)
   /** 导入桥状态机:loading(扫描)→ select(勾选)→ running → done。 */
   const [importer, setImporter] = useState<ImportState | null>(null)
   /** 扫描请求序号:弹层关闭即作废在途请求,迟到的响应不得复活弹层(审查修复)。 */
@@ -198,7 +324,10 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
     } catch {
       setError(true)
     }
-  }, [list])
+    try {
+      setStats(await auditStats())
+    } catch { /* 无审计数据(旧版宿主/文件缺失):统计区不显示 */ }
+  }, [list, auditStats])
 
   useEffect(() => { void load() }, [load])
 
@@ -336,6 +465,9 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
           <p style={{ margin: '4px 0' }}>✨ {t('emptyStep3')}</p>
         </div>
       )}
+
+      {/* 注入审计统计(0.9.0):概览指标卡 + 注入点阵榜 + 截断榜 + 时间轴 */}
+      {stats !== null && stats.injections > 0 && <StatsSection stats={stats} t={t} now={now} />}
 
       {/* 组区:用户级 | 项目级 两列(各有内容才分列;flexWrap 窄屏自动堆叠) */}
       {(() => {

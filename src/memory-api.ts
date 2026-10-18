@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { MemoryStore, INDEX_FILENAME, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
 import { scanClaudeMemory, runClaudeImport } from './import-claude.ts'
+import { readAudit, aggregateAudit } from './audit.ts'
 import { homedir } from 'node:os'
 import type { MemoryScope, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
@@ -235,6 +236,15 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
       } catch (error) {
         return json({ error: String(error) }, 400)
       }
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/audit.stats`, methods: ['GET'], requestBody: 'buffered',
+    fetch: async () => {
+      // 注入审计统计(0.9.0):读 audit.jsonl 聚合,坏行已在读取层跳过
+      const entries = await readAudit(rootDir)
+      return json(aggregateAudit(entries))
     },
   })
 

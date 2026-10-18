@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [0.9.0] - 2026-10-19
+
+### Added
+
+- **Injection audit log** (#11) — every prompt assembly now records *which
+  memories were injected into which session* to `audit.jsonl`: per session,
+  deduplicated by injection-set signature (set changes re-record; empty
+  windows reset), with the actually-injected names, the budget-truncated
+  names, and the byte cost. Writes are cross-process locked with orphan
+  recovery (shares the store's lock layer), serialized in-process, silent on
+  failure, capped at 1 MB with tail-preserving rotation, and never touch the
+  injection path itself.
+- **📊 Injection stats in the panel**: a collapsible section with metric
+  cards (sessions / injections / average segment size), a most-injected
+  leaderboard drawn as a dot-matrix — one dot per injection plus an `n/m`
+  ratio, so equal counts still read as a tidy row instead of identical full
+  bars — per-memory truncation counts, a dedicated budget-truncation board
+  (the real signal once a session's injection set stabilizes), and a vertical
+  timeline with the latest event highlighted (per session: time, workspace,
+  count, KB, truncation markers). All hand-drawn CSS — no third-party libs
+  cross the browser baseline. `audit.stats` also aggregates per-memory
+  `truncatedCount` and `avgBytes` behind the authenticated fence; a failed
+  fetch simply hides the section.
+
+### Fixed
+
+- Hardened by an adversarial review (9 agents, all findings reproduced):
+  name extraction from index lines is now line-anchored with greedy
+  backtracking (a title containing a literal `](fake.md)` hijacked the
+  leftmost match and credited a phantom memory in the leaderboard);
+  truncated-name diff is multiset-based (same-name memories across scopes
+  broke the conservation invariant); an empty injection resets the session
+  signature (a same-set return after a mid-session delete-all was silently
+  skipped); audit file rotation bounds the only ever-growing file.
+- Tests 139 → 150.
+
 ## [0.8.0] - 2026-10-19
 
 ### Added
@@ -278,3 +314,4 @@ page (generated from this file at publish time).
 [0.7.1]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.1
 [0.7.2]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.2
 [0.8.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.8.0
+[0.9.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.9.0

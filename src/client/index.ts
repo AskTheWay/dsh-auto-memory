@@ -49,6 +49,8 @@ export interface MemoryFace {
   importScan: () => Promise<{ found: boolean; totalImportable: number; projects: Array<{ slug: string; importable: number; cwd: string | null; targetScope: 'project' | 'user'; targetDir: string }> }>
   /** 0.8.0 导入桥:执行导入(同名跳过)。 */
   importRun: (payload: { slugs?: string[]; allToUser: boolean }) => Promise<Response>
+  /** 0.9.0 注入审计统计(注入榜/时间线/汇总会话数)。 */
+  auditStats: () => Promise<{ sessions: number; injections: number; memories: Array<{ name: string; injectedCount: number; lastTs: number }>; timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number }> }>
 }
 
 const BASE = '/api/auto-memory'
@@ -91,6 +93,11 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     }),
+    auditStats: async () => {
+      const response = await fetch(`${BASE}/audit.stats`, { headers: { 'cache-control': 'no-store' } })
+      if (!response.ok) throw new Error(`audit.stats HTTP ${String(response.status)}`)
+      return (await response.json()) as ReturnType<MemoryFace['auditStats']>
+    },
     currentCwd: () => currentCwd(ctx),
   }
 }

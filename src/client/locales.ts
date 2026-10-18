@@ -67,6 +67,17 @@ export const zh = {
   importRunning: '导入中…',
   importDone: '完成:{n} 导入 / {s} 跳过(同名) / {f} 失败',
   importDupNote: '同名记忆会跳过,不会覆盖;可重复执行。',
+  statsTitle: '注入统计',
+  statsSessions: '个会话',
+  statsInjections: '次注入',
+  statsTopInjected: '最常注入的记忆',
+  statsTimeline: '最近注入',
+  statsMemories: '条',
+  statsTruncated: '截断 ',
+  statsAvg: '平均段体积',
+  statsTruncatedTop: '预算截断(被挤出注入)',
+  statsAll: '全部 {n} 条',
+  statsAllInjected: '全部 {n} 条记忆参与了全部 {m} 次注入',
 } as const
 
 export type PluginMemoryLocaleKey = keyof typeof zh
@@ -135,4 +146,15 @@ export const en: Record<PluginMemoryLocaleKey, string> = {
   importRunning: 'Importing…',
   importDone: 'Done: {n} imported / {s} skipped (same name) / {f} failed',
   importDupNote: 'Same-name memories are skipped, never overwritten; safe to re-run.',
+  statsTitle: 'Injection stats',
+  statsSessions: 'sessions',
+  statsInjections: 'injections',
+  statsTopInjected: 'Most-injected memories',
+  statsTimeline: 'Recent injections',
+  statsMemories: 'memories',
+  statsTruncated: 'truncated ',
+  statsAvg: 'avg segment size',
+  statsTruncatedTop: 'Budget truncations (pushed out)',
+  statsAll: 'All {n}',
+  statsAllInjected: 'All {n} memories appear in every one of the {m} injections',
 }

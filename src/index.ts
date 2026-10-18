@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { MemoryStore } from './store.ts'
 import { registerMemoryTools } from './tools.ts'
 import { MEMORY_SECTION, renderMemoryIndexText } from './prompt.ts'
+import { registerInjectionAudit } from './audit.ts'
 import { registerConsolidation } from './consolidate.ts'
 import { registerMemoryApi } from './memory-api.ts'
 
@@ -96,9 +97,13 @@ export function apply(ctx: Context, config: Config): void {
   // 注意:0.1.5-rc.2 的 PromptSection 尚无 interpolate 开关(0.1.6-alpha.2 才有),
   // 严格插值下记忆内容含字面 {{ }} 会炸组装 —— 由 renderMemoryIndexText 内部中和;
   // peer 升级到 >=0.1.6 后可改用 interpolate: false 并去掉中和逻辑。
+  // 0.9.0:注入经 registerInjectionAudit 包装——注入集合(按会话)变化时追加
+  // audit.jsonl(注入审计 #11);返回值即注入文本,审计纯副作用绝不影响注入。
+  const audit = registerInjectionAudit(store, config, rootDir)
   ctx.systemPrompt.section({
     name: MEMORY_SECTION,
     order: 4000,
-    text: context => renderMemoryIndexText(store, config, context.agent?.session.header.cwd),
+    text: context => audit.text(context.agent?.session.header.cwd, context.agent?.session.id),
   })
+  ctx.on('session/disposed', session => { audit.cleanup(session.id) })
 }

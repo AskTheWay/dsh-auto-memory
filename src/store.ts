@@ -85,6 +85,37 @@ export function asMemoryType(raw: string): MemoryType {
   return hit
 }
 
+/**
+ * 文件锁 + 孤儿锁自愈(模块级,store 与审计共用,单一实现点):
+ * 官方包设计"contender 永不移除已存在的锁,孤儿恢复是运维操作"——但交互式
+ * CLI 的 Ctrl+C/崩溃会让 .lock 永久残留,砖掉此后所有写/删(审查确认的
+ * major)。超时后检查锁内 pid:持有进程已死则回收锁重试一次;活进程持有则
+ * 让超时错误冒泡(模型可读文案由工具层转译)。
+ */
+export async function withLockRecovery<T>(lockTarget: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await withFileLock(lockTarget, operation)
+  } catch (error) {
+    if (!/timed out waiting for the writer lock/.test(String(error))) throw error
+    const lockPath = `${lockTarget}.lock`
+    const pidRaw = await fsp.readFile(lockPath, 'utf8').catch(() => null)
+    if (pidRaw === null) throw error // 锁已消失,让调用方按原错误重试语义处理
+    const pid = Number.parseInt(pidRaw.trim(), 10)
+    if (!Number.isInteger(pid) || pid <= 0) throw error
+    let alive: boolean
+    try {
+      // Windows 上 pid 0 是 System Idle;process.kill(pid, 0) 仅探测不发送信号
+      process.kill(pid, 0)
+      alive = true
+    } catch {
+      alive = false
+    }
+    if (alive) throw error
+    await fsp.rm(lockPath, { force: true })
+    return await withFileLock(lockTarget, operation)
+  }
+}
+
 /** 解析 frontmatter(参考 skill-filesystem parseFrontmatter,容忍 CRLF)。 */
 function parseFrontmatter(raw: string): { data: Record<string, unknown>; body: string } | undefined {
   const firstLineEnd = raw.indexOf('\n')
@@ -389,7 +420,7 @@ export class MemoryStore {
     // withFileLock 要求父目录已存在,先建目录再取锁
     await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
     let written: MemoryRecord | undefined
-    await this.withLockRecovery(join(dir, INDEX_FILENAME), async () => {
+    await withLockRecovery(join(dir, INDEX_FILENAME), async () => {
       // 锁内读旧记录拿生命周期基线(created/读取计数跨更新保留)
       const existing = parseMemory(
         await fsp.readFile(file, 'utf8').catch(() => ''),
@@ -437,7 +468,7 @@ export class MemoryStore {
       const dir = this.dir(scope, cwd)
       const file = join(dir, `${normalizeName(name)}.md`)
       if (!(await fsp.stat(file).then(() => true, () => false))) return
-      await this.withLockRecovery(join(dir, INDEX_FILENAME), async () => {
+      await withLockRecovery(join(dir, INDEX_FILENAME), async () => {
         const record = parseMemory(await fsp.readFile(file, 'utf8').catch(() => ''), scope)
         if (record === null) return
         // 仅当旧记录当前处于"零引用超龄"隐藏态(本次计数会使其复活)才重建索引;
@@ -469,7 +500,7 @@ export class MemoryStore {
     const dir = this.dir(scope, cwd)
     let removed = 0
     try {
-      await this.withLockRecovery(join(dir, INDEX_FILENAME), async () => {
+      await withLockRecovery(join(dir, INDEX_FILENAME), async () => {
         let entries: string[]
         try {
           entries = await fsp.readdir(dir)
@@ -503,7 +534,7 @@ export class MemoryStore {
     const dir = this.dir(scope, cwd)
     const dirExists = await fsp.stat(dir).then(() => true, () => false)
     if (!dirExists) return
-    await this.withLockRecovery(join(dir, INDEX_FILENAME), () => this.rebuildIndex(scope, cwd))
+    await withLockRecovery(join(dir, INDEX_FILENAME), () => this.rebuildIndex(scope, cwd))
       .catch(() => {}) // 刷新失败不阻塞任何路径
   }
 
@@ -513,7 +544,7 @@ export class MemoryStore {
     const file = join(dir, `${normalizeName(name)}.md`)
     let removed = false
     try {
-      await this.withLockRecovery(join(dir, INDEX_FILENAME), async () => {
+      await withLockRecovery(join(dir, INDEX_FILENAME), async () => {
         try {
           await fsp.unlink(file)
         } catch {
@@ -536,30 +567,6 @@ export class MemoryStore {
    * 运维操作"——但交互式 CLI 的 Ctrl+C/崩溃会让 .lock 永久残留,砖掉此后所有
    * 写/删(审查确认的 major)。此处超时后检查锁内 pid:持有进程已死则回收重试一次。
    */
-  private async withLockRecovery<T>(lockTarget: string, operation: () => Promise<T>): Promise<T> {
-    try {
-      return await withFileLock(lockTarget, operation)
-    } catch (error) {
-      if (!/timed out waiting for the writer lock/.test(String(error))) throw error
-      const lockPath = `${lockTarget}.lock`
-      const pidRaw = await fsp.readFile(lockPath, 'utf8').catch(() => null)
-      if (pidRaw === null) throw error // 锁已消失,让调用方按原错误重试语义处理
-      const pid = Number.parseInt(pidRaw.trim(), 10)
-      if (!Number.isInteger(pid) || pid <= 0) throw error
-      let alive: boolean
-      try {
-        // Windows 上 pid 0 是 System Idle;process.kill(pid, 0) 仅探测不发送信号
-        process.kill(pid, 0)
-        alive = true
-      } catch {
-        alive = false
-      }
-      if (alive) throw error // 活进程真持有,让超时错误冒泡(模型可读文案由工具层转译)
-      await fsp.rm(lockPath, { force: true })
-      return await withFileLock(lockTarget, operation)
-    }
-  }
-
   /** 全量重建指定作用域的 MEMORY.md(须持锁调用);删空时移除索引文件。
    *  软淘汰:staleAfterDays>0 时,陈旧零引用的记忆不进索引(文件保留,memory_list 可见)。 */
   private async rebuildIndex(scope: MemoryScope, cwd?: string): Promise<void> {

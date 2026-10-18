@@ -40,8 +40,37 @@ export function neutralizeBraces(text: string): string {
 
 /** 渲染合并索引正文(用户级/项目级分节);两层均无记忆返回空串。 */
 export function renderMemoryIndexText(store: MemoryStore, config: Config, cwd: string | undefined): string {
+  return renderMemoryIndexDetail(store, config, cwd).text
+}
+
+/** 注入详情(0.9.0 审计数据源):实际注入文本 + 保留/截断名单 + 总字节。 */
+export interface InjectionDetail {
+  text: string
+  /** 实际注入的记忆 name(截断后保留的索引行解析)。 */
+  injected: string[]
+  /** 被预算截断挤出注入的 name(未截断为空数组)。 */
+  truncated: string[]
+  /** 注入段总字节(索引+指导+协议壳)。 */
+  textBytes: number
+}
+
+/** 从索引行解析记忆 name(`- [标题](name.md) — 摘要`)。
+ * 行首锚定 + 贪婪 .*:标题可含字面 `](fake.md)`(模型可写、导入桥取自
+ * Claude 正文 H1)——贪婪回溯落到行内最后一个 `](xxx.md)` 即真实链接,
+ * 最左匹配会被标题劫持记错审计身份(审查实测复现)。 */
+function namesFromIndexLines(lines: string[]): string[] {
+  const names: string[] = []
+  for (const line of lines) {
+    const match = /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)
+    if (match !== null) names.push(match[1]!)
+  }
+  return names
+}
+
+/** 渲染 + 审计详情(实现体;renderMemoryIndexText 是其 text 字段的兼容包装)。 */
+export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd: string | undefined): InjectionDetail {
   // 无 agent 上下文(裸组装)或 cwd 缺失时不贡献内容
-  if (cwd === undefined) return ''
+  if (cwd === undefined) return { text: '', injected: [], truncated: [], textBytes: 0 }
   const sections: string[] = []
   if (config.enableUserScope) {
     const userIndex = store.readIndexSync('user')
@@ -49,16 +78,22 @@ export function renderMemoryIndexText(store: MemoryStore, config: Config, cwd: s
   }
   const projectIndex = store.readIndexSync('project', cwd)
   if (projectIndex !== null) sections.push(`## Project memories\n\n${projectIndex}`)
-  if (sections.length === 0) return ''
+  if (sections.length === 0) return { text: '', injected: [], truncated: [], textBytes: 0 }
   const index = `# Persistent memory index\n\n${sections.join('\n\n')}`
+  // 全量名单(截断前)——审计的 truncated = 全量 - 保留
+  const allNames = namesFromIndexLines(index.split('\n'))
   // 预算语义 = 整段(索引 + 写入指导 + 协议壳):先扣除指导文本、协议壳、
   // 截断标记与分隔的余量(L0 评测 index-budget 抓出的缺陷:旧实现只约束索引,
   // 拼接的 policy 尾巴可使其超预算 ~800B)
   const policyBytes = Buffer.byteLength(MEMORY_POLICY_TEXT, 'utf8')
   const budget = Math.max(1024, config.maxBytes - policyBytes - CONTEXT_OVERHEAD - 96)
   let text: string
+  let injected: string[]
+  let truncated: string[]
   if (Buffer.byteLength(index, 'utf8') <= budget) {
     text = index
+    injected = allNames
+    truncated = []
   } else {
     // 超预算:按行截断(保住标题与尽可能靠前的行),尾部留截断标记。
     // 超长单行被跳过而非终止循环(continue):一条臃肿行不应把它排序位置之后的
@@ -73,10 +108,22 @@ export function renderMemoryIndexText(store: MemoryStore, config: Config, cwd: s
       size += lineSize
     }
     text = `${kept.join('\n')}\n…(index truncated at ${budget} bytes — call memory_list to see all)`
+    injected = namesFromIndexLines(kept)
+    // 多重集差集(count-based):同名记忆可合法存在于 user+project 两层,
+    // 裸 filter 会把被截掉的同名行也滤掉 → truncated 漏计、名单守恒被破
+    // (审查实测);按出现次数差集,余数进截断名单。
+    const remain = new Map<string, number>()
+    for (const name of allNames) remain.set(name, (remain.get(name) ?? 0) + 1)
+    for (const name of injected) remain.set(name, (remain.get(name) ?? 1) - 1)
+    truncated = []
+    for (const [name, count] of remain) {
+      for (let i = 0; i < count; i++) truncated.push(name)
+    }
   }
   // 写入指导随索引一起出现(无记忆不注入,对齐 Claude Code 行为);
   // 整段包进协议壳——标签字样入库时已转义(stripMemoryTags),壳不可被内容穿透
-  return neutralizeBraces(`${CONTEXT_OPEN}\n${CONTEXT_NOTE}\n${text}\n\n${MEMORY_POLICY_TEXT}\n${CONTEXT_CLOSE}`)
+  const full = neutralizeBraces(`${CONTEXT_OPEN}\n${CONTEXT_NOTE}\n${text}\n\n${MEMORY_POLICY_TEXT}\n${CONTEXT_CLOSE}`)
+  return { text: full, injected, truncated, textBytes: Buffer.byteLength(full, 'utf8') }
 }
 
 /** 写入指导(随索引段注入):何时写、怎么写、何时不写(对齐 Claude Code 的记忆规则)。 */
