@@ -12,7 +12,7 @@
  * ui-primitives 具体导出面(降低跨版本脆弱性),仅用原生元素。
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MemoryFace } from './index.ts'
 import type { PluginMemoryLocaleKey } from './locales.ts'
@@ -42,6 +42,25 @@ interface PanelGroup {
 }
 
 type Translate = (key: PluginMemoryLocaleKey, params?: Record<string, string | number>) => string
+
+/** 导入桥的扫描响应(import.claude.scan)。 */
+interface ImportScanProject {
+  slug: string
+  importable: number
+  cwd: string | null
+  targetScope: 'project' | 'user'
+  targetDir: string
+}
+
+/** 导入弹层状态机。 */
+type ImportState =
+  | { phase: 'loading' }
+  | { phase: 'empty' }
+  | { phase: 'failed' }
+  | { phase: 'runFailed' } // 执行阶段失败(与扫描失败分开:部分记忆可能已落盘)
+  | { phase: 'select'; projects: ImportScanProject[]; selected: Record<string, boolean>; allToUser: boolean }
+  | { phase: 'running' }
+  | { phase: 'done'; summary: string }
 
 /** 面板完整 props(由 main slot 渲染器组装:业务 face 直通交叉为顶层成员)。 */
 export type MemoryPageProps = PropsRuntime<'main'> & PropsLocale<'autoMemory'> & MemoryFace
@@ -155,7 +174,7 @@ function relativeTime(ms: number | undefined, now: number, t: Translate): string
 }
 
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
-export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importRun }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   const [error, setError] = useState(false)
@@ -164,6 +183,10 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState('')
   const [now, setNow] = useState(() => Date.now())
+  /** 导入桥状态机:loading(扫描)→ select(勾选)→ running → done。 */
+  const [importer, setImporter] = useState<ImportState | null>(null)
+  /** 扫描请求序号:弹层关闭即作废在途请求,迟到的响应不得复活弹层(审查修复)。 */
+  const importSeq = useRef(0)
 
   const load = useCallback(async () => {
     setError(false)
@@ -252,13 +275,37 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
   const totalUsage = totalIndex / maxBytes
 
   return (
-    <section style={{ padding: '20px', maxWidth: '860px' }}>
+    <section style={{
+      padding: '20px', maxWidth: '1100px',
+      // 自滚动:main slot 挂载容器不提供页面级滚动,内容超出会被裁掉
+      // (导入后列表变长即触发);自滚后 sticky 弹层也相对本容器正确吸附
+      height: '100%', overflowY: 'auto', boxSizing: 'border-box',
+    }}>
       <h2 style={{ marginBottom: '4px' }}>{t('title')}</h2>
       <p style={{ marginTop: 0, opacity: 0.75 }}>{t('intro')}</p>
 
-      {/* 顶部操作行:刷新 + 搜索 */}
+      {/* 顶部操作行:刷新 + 搜索 + 导入 */}
       <p style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-        <button onClick={() => { void load() }} disabled={busy}>↻ {t('refresh')}</button>
+        <button onClick={() => { void load() }} disabled={busy}>↻ {t('refresh')}</button>{' '}
+        <button disabled={busy || importer !== null || editing !== null} onClick={() => {
+          const seq = ++importSeq.current
+          setImporter({ phase: 'loading' })
+          void importScan()
+            .then(scan => {
+              if (seq !== importSeq.current) return // 弹层已关闭:丢弃迟到响应
+              if (scan.found && scan.projects.length > 0) {
+                const selected: Record<string, boolean> = {}
+                for (const p of scan.projects) selected[p.slug] = true
+                setImporter({ phase: 'select', projects: scan.projects, selected, allToUser: false })
+              } else {
+                setImporter({ phase: 'empty' })
+              }
+            })
+            .catch(() => {
+              if (seq !== importSeq.current) return
+              setImporter({ phase: 'failed' })
+            })
+        }}>{t('importBtn')}</button>
         <input
           style={{ ...FIELD_STYLE, flex: '1 1 200px', minWidth: '160px', padding: '4px 10px' }}
           placeholder={t('searchPlaceholder')} value={filter} onChange={event => { setFilter(event.target.value) }}
@@ -290,63 +337,79 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
         </div>
       )}
 
-      {visibleGroups?.map(group => {
-        const usage = group.indexBytes / maxBytes
-        const hot = usage > 0.8
-        const pinnedCount = group.memories.filter(m => m.pinned).length
-        const mutedCount = group.memories.filter(m => m.disabled).length
+      {/* 组区:用户级 | 项目级 两列(各有内容才分列;flexWrap 窄屏自动堆叠) */}
+      {(() => {
+        const renderGroup = (group: PanelGroup): ReactNode => {
+          const usage = group.indexBytes / maxBytes
+          const hot = usage > 0.8
+          const pinnedCount = group.memories.filter(m => m.pinned).length
+          const mutedCount = group.memories.filter(m => m.disabled).length
+          return (
+            <div key={group.key} style={GROUP_STYLE}>
+              <h3 style={{ margin: '0 0 4px' }}>
+                {group.scope === 'user' ? '👤 ' : '📁 '}
+                {group.scope === 'user' ? t('userScope') : `${t('projectScope')} · ${group.slug}`}
+                {group.scope === 'project' && group.current === true && <span title={t('currentBadge')}> ✅</span>}
+                {group.scope === 'project' && group.current !== true
+                  && <small style={{ marginLeft: '8px', opacity: 0.65 }}>{t('projectNeedsSession')}</small>}
+              </h3>
+              {/* 组摘要行 */}
+              <div style={{ fontSize: '12px', opacity: 0.8 }}>
+                {group.memories.length} {t('overviewMemories')}
+                {pinnedCount > 0 && <> · 📌 {pinnedCount}</>}
+                {mutedCount > 0 && <> · 🔇 {mutedCount}</>}
+              </div>
+              <div style={{ fontSize: '12px', color: hot ? '#d97706' : 'inherit' }}>
+                {t('indexUsage')}: {group.indexBytes}{t('bytes')} {t('of')} {t('budget')} {maxBytes}{t('bytes')} ({Math.round(usage * 100)}%)
+              </div>
+              <div style={BAR_STYLE}>
+                <div style={{ width: `${Math.min(100, usage * 100)}%`, height: '100%', background: hot ? '#d97706' : 'rgba(96,165,250,.9)' }} />
+              </div>
+              {group.indexText != null && (
+                <details style={{ margin: '6px 0' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.8 }}>👁 {t('injectedPreview')}</summary>
+                  <pre style={{ margin: '6px 0 0', padding: '8px', background: 'rgba(127,127,127,0.12)', borderRadius: '6px', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{group.indexText}</pre>
+                </details>
+              )}
+              {group.memories.map(memory => {
+                const badge = TYPE_BADGE[memory.type] ?? TYPE_BADGE.reference
+                const when = relativeTime(memory.updatedMs, now, t)
+                return (
+                  <div key={memory.name} style={rowVisual(memory)}>
+                    <span style={{ minWidth: 0, flex: 1 }}>
+                      <strong>{memory.title ?? memory.name}</strong>
+                      {' '}<span style={{ ...BADGE_STYLE, ...badge.style }}>{badge.label}</span>
+                      {' '}<span style={memory.disabled ? STATE_MUTED : STATE_ACTIVE}>{memory.disabled ? `⊘ ${t('muted')}` : `● ${t('activeState')}`}</span>
+                      <br />
+                      <span style={{ fontSize: '13px', opacity: 0.85 }}>{memory.description}</span>
+                      <span style={{ fontSize: '11px', opacity: 0.55 }}> · {memory.reads} {t('reads')}{when !== null ? ` · ${when}` : ''}</span>
+                    </span>
+                    <span style={{ whiteSpace: 'nowrap' }}>
+                      {/* 导入弹层开着时互斥禁用:两弹层同为 sticky 会互相遮挡(审查修复) */}
+                      <button disabled={busy || importer !== null} title={t('edit')} onClick={() => { void openEditor(group, memory) }}>✏️</button>{' '}
+                      <button disabled={busy || importer !== null} title={memory.pinned ? t('unpinAction') : t('pinAction')} onClick={() => { toggleFlag(group, memory, 'pinned') }}>{memory.pinned ? '📍' : '📌'}</button>{' '}
+                      <button disabled={busy || importer !== null} title={memory.disabled ? t('unmuteAction') : t('muteAction')} onClick={() => { toggleFlag(group, memory, 'disabled') }}>{memory.disabled ? '🔈' : '🔇'}</button>{' '}
+                      <button disabled={busy || importer !== null} title={t('delete')} onClick={() => { if (window.confirm(t('confirmDelete'))) void act(() => del({ cwd: cwd(group), scope: group.scope, name: memory.name })) }}>🗑</button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        }
+        const userGroups = visibleGroups?.filter(g => g.scope === 'user') ?? []
+        const projectGroups = visibleGroups?.filter(g => g.scope !== 'user') ?? []
         return (
-          <div key={group.key} style={GROUP_STYLE}>
-            <h3 style={{ margin: '0 0 4px' }}>
-              {group.scope === 'user' ? '👤 ' : '📁 '}
-              {group.scope === 'user' ? t('userScope') : `${t('projectScope')} · ${group.slug}`}
-              {group.scope === 'project' && group.current === true && <span title={t('currentBadge')}> ✅</span>}
-              {group.scope === 'project' && group.current !== true
-                && <small style={{ marginLeft: '8px', opacity: 0.65 }}>{t('projectNeedsSession')}</small>}
-            </h3>
-            {/* 组摘要行 */}
-            <div style={{ fontSize: '12px', opacity: 0.8 }}>
-              {group.memories.length} {t('overviewMemories')}
-              {pinnedCount > 0 && <> · 📌 {pinnedCount}</>}
-              {mutedCount > 0 && <> · 🔇 {mutedCount}</>}
+          <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div style={{ flex: projectGroups.length > 0 ? '1 1 420px' : '1 1 100%', minWidth: 0 }}>
+              {userGroups.map(renderGroup)}
             </div>
-            <div style={{ fontSize: '12px', color: hot ? '#d97706' : 'inherit' }}>
-              {t('indexUsage')}: {group.indexBytes}{t('bytes')} {t('of')} {t('budget')} {maxBytes}{t('bytes')} ({Math.round(usage * 100)}%)
+            <div style={{ flex: userGroups.length > 0 ? '1 1 420px' : '1 1 100%', minWidth: 0 }}>
+              {projectGroups.map(renderGroup)}
             </div>
-            <div style={BAR_STYLE}>
-              <div style={{ width: `${Math.min(100, usage * 100)}%`, height: '100%', background: hot ? '#d97706' : 'rgba(96,165,250,.9)' }} />
-            </div>
-            {group.indexText != null && (
-              <details style={{ margin: '6px 0' }}>
-                <summary style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.8 }}>👁 {t('injectedPreview')}</summary>
-                <pre style={{ margin: '6px 0 0', padding: '8px', background: 'rgba(127,127,127,0.12)', borderRadius: '6px', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{group.indexText}</pre>
-              </details>
-            )}
-            {group.memories.map(memory => {
-              const badge = TYPE_BADGE[memory.type] ?? TYPE_BADGE.reference
-              const when = relativeTime(memory.updatedMs, now, t)
-              return (
-                <div key={memory.name} style={rowVisual(memory)}>
-                  <span style={{ minWidth: 0, flex: 1 }}>
-                    <strong>{memory.title ?? memory.name}</strong>
-                    {' '}<span style={{ ...BADGE_STYLE, ...badge.style }}>{badge.label}</span>
-                    {' '}<span style={memory.disabled ? STATE_MUTED : STATE_ACTIVE}>{memory.disabled ? `⊘ ${t('muted')}` : `● ${t('activeState')}`}</span>
-                    <br />
-                    <span style={{ fontSize: '13px', opacity: 0.85 }}>{memory.description}</span>
-                    <span style={{ fontSize: '11px', opacity: 0.55 }}> · {memory.reads} {t('reads')}{when !== null ? ` · ${when}` : ''}</span>
-                  </span>
-                  <span style={{ whiteSpace: 'nowrap' }}>
-                    <button disabled={busy} title={t('edit')} onClick={() => { void openEditor(group, memory) }}>✏️</button>{' '}
-                    <button disabled={busy} title={memory.pinned ? t('unpinAction') : t('pinAction')} onClick={() => { toggleFlag(group, memory, 'pinned') }}>{memory.pinned ? '📍' : '📌'}</button>{' '}
-                    <button disabled={busy} title={memory.disabled ? t('unmuteAction') : t('muteAction')} onClick={() => { toggleFlag(group, memory, 'disabled') }}>{memory.disabled ? '🔈' : '🔇'}</button>{' '}
-                    <button disabled={busy} title={t('delete')} onClick={() => { if (window.confirm(t('confirmDelete'))) void act(() => del({ cwd: cwd(group), scope: group.scope, name: memory.name })) }}>🗑</button>
-                  </span>
-                </div>
-              )
-            })}
           </div>
         )
-      })}
+      })()}
       {filter.trim().length > 0 && (visibleGroups?.length ?? 0) === 0 && <p style={{ opacity: 0.7 }}>{t('noSearchHits')}</p>}
       {editing !== null && (
         <MemoryEditor
@@ -358,6 +421,38 @@ export function MemoryPage({ t, list, read, write, del, currentCwd }: MemoryPage
           onSave={async payload => {
             await act(() => write({ cwd: cwd(editing.group), scope: editing.group.scope, ...payload }))
             setEditing(null)
+          }}
+        />
+      )}
+      {importer !== null && (
+        <ImportDialog
+          t={t}
+          state={importer}
+          onClose={() => { importSeq.current++; setImporter(null) }}
+          onToggle={(slug, value) => {
+            if (importer.phase !== 'select') return
+            setImporter({ ...importer, selected: { ...importer.selected, [slug]: value } })
+          }}
+          onAllToUser={value => {
+            if (importer.phase !== 'select') return
+            setImporter({ ...importer, allToUser: value })
+          }}
+          onRun={async () => {
+            if (importer.phase !== 'select') return
+            const slugs = importer.projects.filter(p => importer.selected[p.slug]).map(p => p.slug)
+            if (slugs.length === 0) return
+            setImporter({ phase: 'running' })
+            try {
+              const response = await importRun({ slugs, allToUser: importer.allToUser })
+              if (!response.ok) throw new Error(String(response.status))
+              const result = await response.json() as { imported: number; skipped: number; failed: number }
+              setImporter({ phase: 'done', summary: t('importDone', { n: result.imported, s: result.skipped, f: result.failed }) })
+            } catch {
+              // 执行失败≠扫描失败:部分记忆可能已落盘,刷新列表 + 独立文案(审查修复)
+              setImporter({ phase: 'runFailed' })
+            } finally {
+              await load()
+            }
           }}
         />
       )}
@@ -393,6 +488,80 @@ function MemoryEditor({ t, initial, initialBody, busy, onSave, onCancel }: {
       <p style={{ margin: '14px 0 0', display: 'flex', gap: '8px' }}>
         <button disabled={busy} style={BTN_PRIMARY} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>💾 {t('save')}</button>
         <button disabled={busy} style={BTN_GHOST} onClick={onCancel}>{t('cancel')}</button>
+      </p>
+    </div>
+  )
+}
+
+/**
+ * 导入 Claude Code 记忆的浮层弹窗(0.8.0):
+ * loading → empty/failed → select(逐项目勾选 + 目标层展示 + allToUser 选项)
+ * → running → done(结果摘要;关闭后列表已刷新)。
+ */
+function ImportDialog({ t, state, onClose, onToggle, onAllToUser, onRun }: {
+  t: Translate
+  state: ImportState
+  onClose: () => void
+  onToggle: (slug: string, value: boolean) => void
+  onAllToUser: (value: boolean) => void
+  onRun: () => Promise<void>
+}): ReactNode {
+  return (
+    <div style={EDITOR_STYLE}>
+      <h3 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span style={{ display: 'inline-block', width: '3px', height: '15px', borderRadius: '2px', background: 'var(--dsw-alias-brand-primary, #3b6ef5)' }} />
+        {t('importTitle')}
+      </h3>
+      {state.phase === 'loading' && <p style={{ margin: '12px 0' }}>⏳ …</p>}
+      {state.phase === 'empty' && <p style={{ margin: '12px 0' }}>{t('importEmpty')}</p>}
+      {state.phase === 'failed' && <p style={{ margin: '12px 0', color: 'var(--dsw-alias-state-warn-primary, #d97706)' }}>{t('importScanFailed')}</p>}
+      {state.phase === 'runFailed' && <p style={{ margin: '12px 0', color: 'var(--dsw-alias-state-warn-primary, #d97706)' }}>{t('importRunFailed')}</p>}
+      {state.phase === 'select' && (
+        <div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', margin: '10px 0' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+                <th style={{ padding: '4px 6px' }} />
+                <th style={{ padding: '4px 6px' }}>{t('importProjectCol')}</th>
+                <th style={{ padding: '4px 6px' }}>{t('importCountCol')}</th>
+                <th style={{ padding: '4px 6px' }}>{t('importTargetCol')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.projects.map(p => (
+                <tr key={p.slug} style={{ borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25))' }}>
+                  <td style={{ padding: '4px 6px' }}>
+                    <input type="checkbox" checked={state.selected[p.slug] === true} onChange={e => { onToggle(p.slug, e.target.checked) }} />
+                  </td>
+                  <td style={{ padding: '4px 6px' }}><code style={{ fontSize: 12 }}>{p.slug}</code></td>
+                  <td style={{ padding: '4px 6px' }}>{p.importable}</td>
+                  <td style={{ padding: '4px 6px' }}>
+                    {p.targetScope === 'project' ? <>📁 <code style={{ fontSize: 11 }}>{p.targetDir}</code></> : <>👤 {t('importNoCwd')}</>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ margin: '6px 0', fontSize: '12px' }}>
+            <label style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={state.allToUser} onChange={e => { onAllToUser(e.target.checked) }} /> {t('importAllToUser')}
+            </label>
+          </p>
+          <p style={{ margin: '6px 0', fontSize: '12px', opacity: 0.7 }}>{t('importDupNote')}</p>
+        </div>
+      )}
+      {state.phase === 'running' && <p style={{ margin: '12px 0' }}>{t('importRunning')}</p>}
+      {state.phase === 'done' && <p style={{ margin: '12px 0' }}>✅ {state.summary}</p>}
+      <p style={{ margin: '12px 0 0', display: 'flex', gap: '8px' }}>
+        {state.phase === 'select' && (
+          <button style={BTN_PRIMARY} disabled={!Object.values(state.selected).some(Boolean)} onClick={() => { void onRun() }}>📥 {t('importRun')}</button>
+        )}
+        {state.phase === 'done' && (
+          <button style={BTN_PRIMARY} onClick={onClose}>✓ {t('refresh')}</button>
+        )}
+        {state.phase !== 'running' && state.phase !== 'done' && (
+          <button style={BTN_GHOST} onClick={onClose}>{t('cancel')}</button>
+        )}
       </p>
     </div>
   )

@@ -6,6 +6,41 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [0.8.0] - 2026-10-19
+
+### Added
+
+- **Claude Code memory import bridge** — the #1 community request (migration) at
+  the lowest cost in the ecosystem, since this plugin's data model is
+  same-origin with Claude Code auto-memory. One button in the panel
+  («Import from Claude Code»): a read-only scan previews every project found
+  under `~/.claude/projects/*/memory` (count + target scope), you tick what to
+  import, and execution maps fields (same four type enums, H1 → title, ISO
+  modified → epoch, original timestamps preserved), routes every write through
+  the existing store security layer, and rebuilds indexes automatically.
+  Project layering resolves each source project's real path from its session
+  `.jsonl` (streamed head, never fully read — the slug encoding is lossy);
+  projects without sessions land in user scope. Same-name memories are skipped
+  — never overwritten; re-running is idempotent.
+- Panel layout pass: the memory list now scrolls inside the panel (content
+  beyond the viewport was cut off), user-scope and project-scope groups render
+  in two columns (each side full-width when the other is empty, stacking on
+  narrow screens).
+
+### Fixed
+
+- Hardened by an adversarial review (10 agents, all findings verified by
+  reproduction): import's same-name check moved inside the store lock
+  (`onlyIfAbsent`) — a concurrent write between the pre-check snapshot and the
+  import write could previously overwrite a same-name memory; `slugs` payload
+  strictness (non-array now rejects with 400 instead of silently meaning
+  "import everything"); failed-count semantics aligned with the scan preview;
+  run-stage failures get their own message and always refresh the list
+  (partial imports did land); a late scan response can no longer resurrect a
+  closed dialog; import and editor dialogs are mutually exclusive (both being
+  sticky, they overlapped).
+- Tests 124 → 139.
+
 ## [0.7.2] - 2026-10-14
 
 ### Added
@@ -242,3 +277,4 @@ page (generated from this file at publish time).
 [0.7.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.0
 [0.7.1]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.1
 [0.7.2]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.2
+[0.8.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.8.0

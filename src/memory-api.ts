@@ -19,6 +19,8 @@ import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { MemoryStore, INDEX_FILENAME, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
+import { scanClaudeMemory, runClaudeImport } from './import-claude.ts'
+import { homedir } from 'node:os'
 import type { MemoryScope, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
 
@@ -184,6 +186,52 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
           body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',
         }, body.scope, cwd)
         return json({ ok: true, name })
+      } catch (error) {
+        return json({ error: String(error) }, 400)
+      }
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/import.claude.scan`, methods: ['GET'], requestBody: 'buffered',
+    fetch: async () => {
+      // 只读扫描:遍历 ~/.claude/projects/*/memory,返回逐项目预览(条数/目标层),
+      // 无任何写副作用——用户在面板确认后才调 import.claude.run
+      const scan = await scanClaudeMemory(homedir())
+      return json({
+        found: scan.totalImportable > 0,
+        totalImportable: scan.totalImportable,
+        projects: scan.projects.map(p => ({
+          slug: p.slug,
+          importable: p.importable,
+          cwd: p.cwd,
+          // 目标层提示:有 cwd → 项目层(目录名预展示);无 → 用户层
+          targetScope: p.cwd !== null ? 'project' : 'user',
+          targetDir: p.cwd !== null ? projectKey(p.cwd) : '_user',
+        })),
+      })
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/import.claude.run`, methods: ['POST'], requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const body = (await request.json()) as { slugs?: unknown; allToUser?: unknown }
+        // 与 memory.write 同款严格校验纪律:slugs 传了就必须是纯字符串数组——
+        // 静默降级成"导入全部"是最坏方向的 fail-open(审查确认)
+        let slugs: string[] | undefined
+        if (body.slugs !== undefined) {
+          if (!Array.isArray(body.slugs) || !body.slugs.every((s): s is string => typeof s === 'string')) {
+            return json({ error: 'slugs must be an array of strings' }, 400)
+          }
+          slugs = body.slugs
+        }
+        const allToUser = body.allToUser === true
+        const scan = await scanClaudeMemory(homedir())
+        if (scan.projects.length === 0) return json({ error: 'nothing to import' }, 400)
+        const result = await runClaudeImport(store, scan, { ...(slugs !== undefined ? { slugs } : {}), allToUser })
+        return json({ ok: true, ...result })
       } catch (error) {
         return json({ error: String(error) }, 400)
       }

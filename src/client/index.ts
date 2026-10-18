@@ -45,6 +45,10 @@ export interface MemoryFace {
   del: (payload: { cwd?: string; scope: string; name: string }) => Promise<Response>
   /** 当前会话工作区的 cwd(项目组操作的定位键;无会话时 undefined)。 */
   currentCwd: () => string | undefined
+  /** 0.8.0 导入桥:扫描 Claude Code 记忆(只读预览)。 */
+  importScan: () => Promise<{ found: boolean; totalImportable: number; projects: Array<{ slug: string; importable: number; cwd: string | null; targetScope: 'project' | 'user'; targetDir: string }> }>
+  /** 0.8.0 导入桥:执行导入(同名跳过)。 */
+  importRun: (payload: { slugs?: string[]; allToUser: boolean }) => Promise<Response>
 }
 
 const BASE = '/api/auto-memory'
@@ -73,6 +77,16 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       body: JSON.stringify(payload),
     }),
     del: payload => fetch(`${BASE}/memory.delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+    importScan: async () => {
+      const response = await fetch(`${BASE}/import.claude.scan`, { headers: { 'cache-control': 'no-store' } })
+      if (!response.ok) throw new Error(`import.claude.scan HTTP ${String(response.status)}`)
+      return (await response.json()) as ReturnType<MemoryFace['importScan']>
+    },
+    importRun: payload => fetch(`${BASE}/import.claude.run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),

@@ -383,18 +383,21 @@ export class MemoryStore {
    * 锁对象是索引文件:同一 workspace 的写/删串行化,跨进程安全;
    * 孤儿锁(Ctrl+C/崩溃残留)自动回收(见 withLockRecovery)。
    */
-  async write(record: Omit<MemoryRecord, 'scope'>, scope: MemoryScope, cwd?: string): Promise<MemoryRecord> {
+  async write(record: Omit<MemoryRecord, 'scope'> & { onlyIfAbsent?: boolean }, scope: MemoryScope, cwd?: string): Promise<MemoryRecord | null> {
     const dir = this.dir(scope, cwd)
     const file = join(dir, `${record.name}.md`)
     // withFileLock 要求父目录已存在,先建目录再取锁
     await fsp.mkdir(dir, { recursive: true, mode: 0o700 })
-    let written: MemoryRecord
+    let written: MemoryRecord | undefined
     await this.withLockRecovery(join(dir, INDEX_FILENAME), async () => {
       // 锁内读旧记录拿生命周期基线(created/读取计数跨更新保留)
       const existing = parseMemory(
         await fsp.readFile(file, 'utf8').catch(() => ''),
         scope,
       )
+      // onlyIfAbsent(导入桥):同名判定下沉锁内,杜绝锁外快照的 TOCTOU
+      // (导入期间并发写入的同名记忆会被覆盖);命中即放弃本次写入,返回 null
+      if (record.onlyIfAbsent === true && existing !== null) return
       // pinned/importance/title 语义:显式设置;未提及时继承现状(importance/title
       // 若不继承,一次工具更新会把 LLM 打的分与标题静默清零——审查确认的丢字段)
       const pinned = record.pinned ?? existing?.pinned
@@ -412,12 +415,17 @@ export class MemoryStore {
         description: sanitizeContent(record.description),
         body: sanitizeContent(record.body),
         ...mergeLifecycleMeta(existing, Date.now()),
+        // 显式传入的时间戳优先(导入桥保留 Claude 原始 modified;
+        // 现有写入路径不传,行为不变——mergeLifecycleMeta 的 now 语义照旧)
+        ...(record.createdMs !== undefined ? { createdMs: record.createdMs } : {}),
+        ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
         scope,
       }
       await writeFileAtomic(file, serializeMemory(written), { mode: 0o600, dirMode: 0o700 })
       await this.rebuildIndex(scope, cwd)
     })
-    return written!
+    // onlyIfAbsent 命中(锁内提前 return)时 written 未赋值 → null 表示未写入
+    return written ?? null
   }
 
   /**
