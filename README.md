@@ -107,9 +107,22 @@ make dsh sessions refuse to resume).
 A deterministic evaluation layer ([evals/](evals/README.md)) runs in CI —
 no LLM, fully reproducible:
 
-- **Injection budget holds at any scale**: 20/50/100/200 memories → the
-  injected section stays ≤ 4 KB (4065/4048/4018/3940 bytes measured), with
-  truncation markers; empty store injects **0 bytes**.
+- **Injection cost is a flat line** — measured on the real render path
+  (typical ~40-char descriptions, default 4 KB budget):
+
+  | memories | 0 | 10 | 20 | 50 | 100 | 200 |
+  |---|---|---|---|---|---|---|
+  | injected section | **0 B** | 2.3 KB (~564 tok) | 3.2 KB (~801 tok) | 4.0 KB (~1008 tok) | 4.0 KB | 4.0 KB |
+
+  The byte budget is a hard ceiling — from 50 memories on, the section is
+  pinned at the cap no matter how many exist (oldest/lowest-ranked rows
+  truncate with a marker). An empty store injects **0 bytes**: the whole
+  section disappears.
+- **Compaction-proof by construction**: the index rides in a *dynamic*
+  system-prompt section re-evaluated on every step assembly — context
+  compaction only compresses conversation history, so memories survive every
+  compaction without re-injection tricks. Approaches that store memories as
+  session-log messages lose theirs on the first compaction pass.
 - **Eviction never misfires**: four-class mixed scenario — only
   stale-zero-read memories get hidden; zero files lost; one read revives.
 - **Known limitation, pinned as baseline**: budget truncation is currently
@@ -121,7 +134,14 @@ no LLM, fully reproducible:
 This evaluation layer already caught a real bug: the byte budget used to
 exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).
 
-**106 tests + three eval layers (L0 deterministic / L1 recall / L3 consolidation). 0 runtime deps beyond `yaml`, ~32 kB installed.**
+**Verified platform matrix** (manually tested, not just declared):
+
+| | CLI | Desktop | Web profile |
+|---|---|---|---|
+| dsh version | 0.1.5-rc.2 | 0.2.0-rc.2 | 0.2.1-rc.2 |
+| status | ✓ tools/prompt/consolidation | ✓ panel + import + audit | ✓ panel + import |
+
+**150 tests + three eval layers (L0 deterministic / L1 recall / L3 consolidation). 0 runtime deps beyond `yaml`, ~35 kB installed.**
 
 ## Install
 
