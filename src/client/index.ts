@@ -41,7 +41,7 @@ export const inject = ['slots', 'locale', 'sessions']
 export interface MemoryFace {
   list: () => Promise<{ groups: unknown[]; maxBytes: number; budgetBytes?: number }>
   read: (query: { name: string; scope: string; cwd?: string }) => Promise<{ body: string; pinned: boolean; disabled: boolean }>
-  write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean }) => Promise<Response>
+  write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean; status?: string }) => Promise<Response>
   del: (payload: { cwd?: string; scope: string; name: string }) => Promise<Response>
   /** 当前会话工作区的 cwd(项目组操作的定位键;无会话时 undefined)。 */
   currentCwd: () => string | undefined
@@ -72,6 +72,12 @@ export interface MemoryFace {
   }) => Promise<Response>
   /** 0.9.0 注入审计统计(注入榜/时间线/汇总会话数)。 */
   auditStats: () => Promise<{ sessions: number; injections: number; memories: Array<{ name: string; injectedCount: number; lastTs: number }>; timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number }> }>
+  /** 1.0.0 记忆体检:待验证/僵尸/矛盾三榜(只读报告;行动在记忆卡片上)。 */
+  healthReport: () => Promise<{
+    unverified: Array<{ name: string; scope: string; slug: string; hasEvidence: boolean }>
+    zombies: Array<{ name: string; scope: string; slug: string; ageDays: number }>
+    conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
+  }>
 }
 
 const BASE = '/api/auto-memory'
@@ -118,6 +124,11 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       const response = await fetch(`${BASE}/audit.stats`, { headers: { 'cache-control': 'no-store' } })
       if (!response.ok) throw new Error(`audit.stats HTTP ${String(response.status)}`)
       return (await response.json()) as ReturnType<MemoryFace['auditStats']>
+    },
+    healthReport: async () => {
+      const response = await fetch(`${BASE}/health.report`, { headers: { 'cache-control': 'no-store' } })
+      if (!response.ok) throw new Error(`health.report HTTP ${String(response.status)}`)
+      return (await response.json()) as ReturnType<MemoryFace['healthReport']>
     },
     currentCwd: () => currentCwd(ctx),
   }
@@ -346,6 +357,19 @@ export const PANEL_CSS = `
 .dam-badge{flex:none;align-self:center;font-size:10.5px;line-height:16px;padding:0 7px;border-radius:999px;white-space:nowrap;border:1px solid transparent;}
 .dam-badge--ok{color:var(--dsw-alias-state-success-primary,#16a34a);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16a34a) 12%,transparent);}
 .dam-badge--warn{color:var(--dsw-alias-state-warn-primary,#d97706);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#d97706) 12%,transparent);}
+/* 可信记忆(1.0.0):状态徽章 + 证据链 + 体检卡 */
+.dam-badge--cand{color:var(--dsw-alias-brand-primary,#4d76e6);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d76e6) 12%,transparent);}
+.dam-badge--danger{color:var(--dsw-alias-state-error-primary,#ef4444);background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ef4444) 12%,transparent);}
+.dam-evidence{display:flex;gap:6px;align-items:baseline;font-size:11.5px;padding:6px 8px;border-left:2px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:0 6px 6px 0;}
+.dam-evidence-label{color:var(--dsw-alias-label-secondary);white-space:nowrap;}
+.dam-evidence-quote{color:var(--dsw-alias-label-secondary);font-style:italic;overflow-wrap:anywhere;}
+.dam-status-actions{display:flex;gap:6px;}
+.dam-health summary{cursor:pointer;display:flex;align-items:center;gap:8px;list-style:none;}
+.dam-health summary::-webkit-details-marker{display:none;}
+.dam-health-body{display:flex;flex-direction:column;gap:2px;max-height:280px;overflow-y:auto;margin-top:8px;padding-right:4px;}
+.dam-health-row{display:flex;align-items:center;gap:8px;font-size:12px;padding:2px 0;min-width:0;}
+.dam-health-row code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.dam-health-meta{margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap;flex:none;}
 .dam-badge--muted{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2);}
 `
 

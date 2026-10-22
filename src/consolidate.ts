@@ -30,7 +30,7 @@ import type { MemoryStore } from './store.ts'
 import { normalizeName, asMemoryType } from './store.ts'
 import { decideConsolidationAction } from './matching.ts'
 import { collectInstructionDigest } from './instructions.ts'
-import type { MemoryScope, MemoryType } from './types.ts'
+import type { MemoryEvidence, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
 
 // dsh-subagent 在 AgentOptions 上声明的字段(此处同样声明合并,不引入对
 // dsh-subagent 的依赖;SessionHeader.delegationDepth 官方类型已有,无需重复声明)
@@ -71,6 +71,8 @@ export interface RawCandidate {
   body?: unknown
   scope?: unknown
   importance?: unknown
+  /** 支撑该事实的转写逐字摘录(1.0.0;宽松校验,坏值只丢 evidence 不丢整条)。 */
+  evidence?: unknown
 }
 
 /** sanitize 后的可写候选。 */
@@ -83,6 +85,10 @@ export interface SanitizedCandidate {
   scope: MemoryScope
   /** 重要度 1-10(固化模型显式打分;非法或缺省时回退类型缺省,由 store 兜底)。 */
   importance?: number
+  /** 可信状态:candidate 默认;指令注入模式命中降级 disputed(1.0.0)。 */
+  status: MemoryStatus
+  /** 证据链(sessionId 来自固化调用点;quote 为 LLM 摘录,两者齐备才落)。 */
+  evidence?: MemoryEvidence
 }
 
 // ---------- 纯函数(可测) ----------
@@ -129,11 +135,19 @@ export function parseCandidates(raw: string): RawCandidate[] | null {
   }
 }
 
+// 指令注入检测的实现已下沉 store.write 单点(覆盖 memory_write 直写路径,
+// 审查确认只挂固化会被绕过);此处转出口保持固化路径调用方与测试兼容。
+import { detectDirectivePattern } from './store.ts'
+export { detectDirectivePattern }
+
 /**
  * sanitize 单条候选:字段类型校验、name 归一化(不可归一化即丢弃)、
- * type 收窄、scope guard、长度截断。返回 null 表示丢弃。
+ * type 收窄、scope guard、长度截断;1.0.0 起统一标可信状态
+ * (默认 candidate;正文命中指令注入模式则 disputed——store.write 单点
+ * 还会再查一次 description,双保险幂等)。evidence 走调用点传入的
+ * sessionId + LLM 摘录。返回 null 表示丢弃。
  */
-export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean): SanitizedCandidate | null {
+export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean, opts?: { sessionId?: string; transcript?: string }): SanitizedCandidate | null {
   try {
     const name = normalizeName(String(raw.name ?? ''))
     const description = String(raw.description ?? '').trim().slice(0, 160)
@@ -144,7 +158,30 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean): 
     const scope: MemoryScope = raw.scope === 'user' ? (enableUserScope ? 'user' : 'project') : 'project'
     const importance = typeof raw.importance === 'number' && Number.isSafeInteger(raw.importance)
       ? Math.min(10, Math.max(1, raw.importance)) : undefined
-    return { name, title, description, type, body, scope, ...(importance !== undefined ? { importance } : {}) }
+    // 可信状态:候选一律有主——默认 candidate;指令注入模式命中降级 disputed
+    // (store.write 单点还有二次校验,此处前置判定让候选对象自洽可测)。
+    const disputed = detectDirectivePattern(body) || detectDirectivePattern(description)
+    const status: MemoryStatus = disputed ? 'disputed' : 'candidate'
+    let quote = typeof raw.evidence === 'string' && raw.evidence.trim().length > 0
+      ? raw.evidence.trim().slice(0, 400)
+      : undefined
+    // 逐字引用对照(审查 minor:prompt 压力下模型会伪造引用)——转写可得时,
+    // 摘录的前 40 字符(空白归一)必须真实出现在转写里,否则视为幻觉引用丢弃
+    // (宽松:只丢 evidence 不丢整条,与"坏值只丢字段"纪律一致)
+    const transcript = opts?.transcript
+    if (quote !== undefined && transcript !== undefined) {
+      const probe = quote.replace(/\s+/g, ' ').slice(0, 40)
+      if (probe.length > 0 && !transcript.replace(/\s+/g, ' ').includes(probe)) quote = undefined
+    }
+    const sessionId = opts?.sessionId
+    const evidence = quote !== undefined && sessionId !== undefined && sessionId.length > 0
+      ? { sessionId, quote }
+      : undefined
+    return {
+      name, title, description, type, body, scope, status,
+      ...(evidence !== undefined ? { evidence } : {}),
+      ...(importance !== undefined ? { importance } : {}),
+    }
   } catch {
     return null
   }
@@ -189,7 +226,9 @@ ${instructions}- Persist: who the user is (role, expertise, durable preferences)
   worth keeping, 1-4 = marginal references. Be conservative, not everything is 9.
 
 Return ONLY a JSON array, each element exactly:
-{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5}
+{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5,"evidence":"1-2 sentence VERBATIM quote from the transcript that supports this fact"}
+"evidence" must be copied word-for-word from the transcript above — do not
+paraphrase. If you cannot quote a supporting line, do not output that item.
 Use scope "user" only for user-global preferences; default "project".
 Write "name" in kebab-case English; write title/description/body in the SAME
 language as the transcript (a Chinese transcript gets Chinese memories —
@@ -287,6 +326,12 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           return
         }
         if (finish.kind === 'aborted') return // teardown 中止属正常,不告警
+        if (finish.kind === 'max-tokens') {
+          // 审查 minor:evidence 抬高输出体积后截断边际变窄——截断会让
+          // parseCandidates 找不到尾 ] 而整批丢弃,必须与"模型格式错误"可区分
+          ctx.logger.warn('[dsh-auto-memory] consolidation output truncated at max_tokens; raising autoSummarizeMaxTokens is recommended')
+          return
+        }
         const text = assembler.blocks()
           .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
           .map(b => b.text)
@@ -299,7 +344,7 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
         let written = 0
         for (const raw of candidates) {
           if (written >= options.autoSummarizeMaxMemories) break
-          const candidate = sanitizeCandidate(raw, options.enableUserScope)
+          const candidate = sanitizeCandidate(raw, options.enableUserScope, { sessionId: agent.session.id, transcript: cap.lines.join('\n\n') })
           if (candidate === null) continue
           const existingAll = await store.listAll(cwd)
           // 同一性判定(0.7.0 更新替换语义):name 锚定/精确同名/描述复述 → 更新
@@ -307,6 +352,10 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           // 无匹配 → 新建。L3 暴露的两 bug(新旧并存、同义重复)由此闭环。
           const decision = decideConsolidationAction(candidate, existingAll)
           if (decision.action === 'update') {
+            // update 分支不传 status/evidence:由 store.write 单点判定——
+            // 内容未变(echo 刷新)继承原状态(verified 不被复述冲掉,审查 major);
+            // 内容变化降回 candidate+旧证据失效;指令模式命中 disputed。
+            // (此前在此无条件重置 verified,被对抗审查实测证伪)
             await store.write({
               name: decision.target.name,
               title: candidate.title ?? undefined,

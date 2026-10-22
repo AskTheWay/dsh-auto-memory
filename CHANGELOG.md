@@ -6,6 +6,54 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.0.0] - 2026-10-23
+
+### Added
+
+- **Trustworthy memory** — memories now carry a trust status
+  (`candidate` / `verified` / `disputed` / `superseded`) and an evidence chain
+  (`{sessionId, quote}`). Legacy files and explicit user writes keep their
+  trust (no status = trusted, behavior unchanged); consolidation products are
+  born `candidate` (still injected — zero behavior change, surfaced for
+  review); **disputed/superseded are never injected**. `verified` can only be
+  granted by the user, from the panel — the model cannot self-endorse.
+- **Evidence chain**: the consolidation prompt asks for a 1-2 sentence
+  verbatim quote supporting each fact; the quote is checked against the
+  transcript (fabricated citations are dropped), stored in frontmatter, and
+  shown in the panel as the basis for verification decisions.
+- **Injection guard at the store choke point**: every write path
+  (consolidation *and* direct `memory_write`) runs directive-pattern
+  detection over body and description — hits are marked `disputed` and kept
+  for human review, never silently dropped. The pattern list is deliberately
+  conservative (every rule requires an imperative verb plus its target; bare
+  nouns like "system prompt" as a *research topic* don't trigger) — tuned
+  after an adversarial review measured a 40% false-positive rate on the
+  first cut.
+- **Memory health panel** (`🩺`): three review boards — unverified
+  (candidates, with/without evidence), zombies (30 days, zero reads), and
+  conflict suspects (same name across scopes; near-duplicate descriptions ≥
+  0.9 similarity). Status badges and one-click verify / dispute / restore
+  actions live on every memory card; restore returns to *candidate* (a
+  disputed memory must be re-verified, not blindly trusted again).
+- **KV-safe by assertion**: a regression test pins the guarantee that two
+  renders within a day are byte-identical (the day-granularity ranking was
+  already the design; now it can't silently regress — upstream Claude Code
+  and claude-mem both shipped cache-breaking bugs here).
+
+### Fixed
+
+- Hardened by the largest adversarial review so far (17 agents, ~930k tokens,
+  every finding reproduced before fixing): a verified badge could be
+  laundried by overwriting content through `memory_write` (status now
+  downgrades to candidate whenever content changes without an explicit
+  status); a pure echo/refresh during consolidation stripped verification
+  (content-unchanged writes now preserve status); the directive-pattern
+  guard was bypassable and misfired on legitimate technical memories; old
+  evidence could cloak new content (evidence invalidated on content change);
+  consolidation `max_tokens` truncation was indistinguishable from a model
+  format error (now its own warning; L3 runner budget raised).
+- Tests 168 → 182.
+
 ## [0.10.0] - 2026-10-20
 
 ### Added
@@ -383,3 +431,4 @@ page (generated from this file at publish time).
 [0.8.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.8.0
 [0.9.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.9.0
 [0.10.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.10.0
+[1.0.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.0.0

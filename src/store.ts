@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { writeFileAtomic, withFileLock } from '@deepseek-ai/dsh-atomic-write'
-import type { MemoryOrigin, MemoryRecord, MemoryScope, MemoryType } from './types.ts'
+import type { MemoryEvidence, MemoryOrigin, MemoryRecord, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
 
 const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'] as const
@@ -179,7 +179,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -189,6 +189,17 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
     const asImportance = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 10 ? value : undefined
     const parsedOrigin = parseOrigin(origin)
+    // 可信状态:非法枚举静默回退 undefined(信任态)——手改 YAML 写错不砖存储(现纪律)
+    const parsedStatus = status === 'candidate' || status === 'verified' || status === 'disputed' || status === 'superseded'
+      ? (status as MemoryStatus)
+      : undefined
+    // 证据链:两个成分都合法才保留(半截证据比没证据更骗人)
+    const evidenceRaw = (evidence !== null && typeof evidence === 'object' && !Array.isArray(evidence)) ? evidence as Record<string, unknown> : null
+    const parsedEvidence = evidenceRaw !== null
+      && typeof evidenceRaw.sessionId === 'string' && evidenceRaw.sessionId.length > 0
+      && typeof evidenceRaw.quote === 'string' && evidenceRaw.quote.length > 0
+      ? { sessionId: evidenceRaw.sessionId.slice(0, 128), quote: evidenceRaw.quote.slice(0, 400) }
+      : undefined
     return {
       name: normalizeName(name),
       title: typeof title === 'string' && title.trim().length > 0 ? title.trim() : undefined,
@@ -199,6 +210,8 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       ...(pinned === true ? { pinned: true } : {}),
       ...(disabled === true ? { disabled: true } : {}),
       ...(asImportance(importance) !== undefined ? { importance: asImportance(importance) } : {}),
+      ...(parsedStatus !== undefined ? { status: parsedStatus } : {}),
+      ...(parsedEvidence !== undefined ? { evidence: parsedEvidence } : {}),
       ...(parsedOrigin !== undefined ? { origin: parsedOrigin } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
@@ -220,6 +233,9 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     ...(record.pinned === true ? { pinned: true } : {}),
     ...(record.disabled === true ? { disabled: true } : {}),
     ...(record.importance !== undefined ? { importance: record.importance } : {}),
+    // 可信状态与证据链(1.0.0):status 缺省即信任态不落键;evidence 整块进出
+    ...(record.status !== undefined ? { status: record.status } : {}),
+    ...(record.evidence !== undefined ? { evidence: { sessionId: record.evidence.sessionId, quote: record.evidence.quote } } : {}),
     // 导入溯源(嵌套块):字段名短、YAML 正确转义;缺省即普通记忆
     ...(record.origin !== undefined ? {
       origin: {
@@ -267,7 +283,13 @@ export function renderIndexBody(records: MemoryRecord[]): string {
   const now = Date.now()
   // 软停用(#10):不注入但文件保留——与软淘汰同款"隐藏不删除"语义;
   // memory_list 与 memory_read 仍可见/可读,取消停用即恢复注入
-  const visible = records.filter(record => record.disabled !== true)
+  // 可信状态过滤(1.0.0):disputed(争议)与 superseded(被取代)不注入——
+  // 与 disabled 同款"隐藏不删除"语义,文件保留、面板可见、可恢复;
+  // candidate 照常注入(固化产物零行为破坏,验证引导交给体检榜)
+  const visible = records.filter(record =>
+    record.disabled !== true
+    && record.status !== 'disputed'
+    && record.status !== 'superseded')
   const ordered = [...visible].sort((a, b) => {
     const pa = a.pinned === true ? 0 : 1
     const pb = b.pinned === true ? 0 : 1
@@ -353,6 +375,27 @@ export function stripMemoryTags(text: string): string {
 }
 
 /** 写入内容统一清洗(脱敏 + 协议标签防护)。 */
+/**
+ * 指令注入模式检测(1.0.0 可信记忆;所有写入路径的单点防线,审查确认
+ * 只挂固化路径会被 memory_write 直写绕过)。
+ *
+ * 词表纪律(对抗审查实测校准,漏报优于误报——误报会把合法记忆静默踢出
+ * 注入):每条必须"指令动词+对象"结构齐全。裸名词("系统提示词"作为研究
+ * 对象)与裸动词("扮演缓存角色")都不算——40% 误报的教训。
+ */
+const DIRECTIVE_PATTERNS: RegExp[] = [
+  /\b(?:ignore|disregard|forget)\b[^.]{0,40}\b(?:previous|prior|above|all)\b[^.]{0,20}\b(?:instructions?|prompts?|rules?)/i,
+  /\byou\s+are\s+now\b/i,
+  /\b(?:reveal|show|print|output|leak|expose)\b[^.]{0,30}\b(?:system|developer)\s+(?:prompt|message|instructions?)\b/i,
+  /(?:忽略|无视)[^.]{0,20}(?:之前|上面|以上)[^.]{0,20}(?:指令|提示|规则)/,
+  /(?:输出|泄露|打印)[^.]{0,15}系统提示词/,
+]
+
+/** 纯函数:文本是否命中指令注入模式(检测 body 与 description;title 过短误报高不查)。 */
+export function detectDirectivePattern(text: string): boolean {
+  return DIRECTIVE_PATTERNS.some(pattern => pattern.test(text))
+}
+
 function sanitizeContent(text: string): string {
   return stripMemoryTags(redactSecrets(text))
 }
@@ -477,8 +520,17 @@ export class MemoryStore {
       // onlyIfAbsent(导入桥):同名判定下沉锁内,杜绝锁外快照的 TOCTOU
       // (导入期间并发写入的同名记忆会被覆盖);命中即放弃本次写入,返回 null
       if (record.onlyIfAbsent === true && existing !== null) return
-      // pinned/importance/title 语义:显式设置;未提及时继承现状(importance/title
-      // 若不继承,一次工具更新会把 LLM 打的分与标题静默清零——审查确认的丢字段)
+      // 可信状态与证据链(1.0.0,审查后统一单点语义):
+      // - 调用方显式传 status → 按传入值(面板 verify/dispute/restore 是唯一
+      //   人工流转入口;固化候选自带 candidate/disputed)
+      // - 调用方未传且内容相对 existing **发生变化** → 信任重评:
+      //   verified/candidate 降回 candidate(内容变了,旧验证不覆盖新内容);
+      //   undefined(用户手写信任态)保持;disputed/superseded 保留(fail-closed)
+      //   同时旧 evidence 失效(逐字引用罩不住新内容)
+      // - 内容未变(纯 echo 刷新/置顶停用等元数据写) → 原样继承,verified
+      //   不被常规流量冲掉(审查 major:复述刷新剥验证)
+      // - 注入扫描在 store 单点:body/description 命中指令注入模式 → disputed。
+      //   只挂固化路径会被 memory_write 直写绕过(审查 major:guard 整体可绕)
       const pinned = record.pinned ?? existing?.pinned
       const disabled = record.disabled ?? existing?.disabled
       const importance = record.importance ?? existing?.importance
@@ -487,6 +539,19 @@ export class MemoryStore {
       // title 进索引行即注入内容,绕过即穿透壳/泄密,审查 blocker)
       const description = sanitizeContent(record.description)
       const body = sanitizeContent(record.body)
+      const contentChanged = existing !== null
+        && (existing.description !== description || existing.body !== body || existing.type !== record.type)
+      let status = record.status ?? existing?.status
+      if (record.status === undefined && contentChanged) {
+        if (existing?.status === 'verified' || existing?.status === 'candidate') status = 'candidate'
+      }
+      if (record.status === undefined && (detectDirectivePattern(body) === true || detectDirectivePattern(description) === true)) status = 'disputed'
+      // evidence.quote 是自由文本(固化模型提供),与 description/body 同过
+      // sanitizeContent 单点清洗;内容变化且调用方未带新证据 → 旧证据失效
+      const evidenceSource = record.evidence ?? (contentChanged ? undefined : existing?.evidence)
+      const evidence: MemoryEvidence | undefined = evidenceSource !== undefined
+        ? { sessionId: evidenceSource.sessionId, quote: sanitizeContent(evidenceSource.quote) }
+        : undefined
       // 导入溯源:首次导入按清洗后内容算指纹;后续任何写入(工具/固化/面板
       // 置顶停用)原样继承首次指纹,绝不重算——指纹只标记"导入瞬间的内容",
       // 撤销时用它判定这条是否已被改过。内容更新不重算 ≠ 指纹失效,比对时
@@ -501,6 +566,8 @@ export class MemoryStore {
         ...(pinned === true ? { pinned: true } : {}),
         ...(disabled === true ? { disabled: true } : {}),
         ...(importance !== undefined ? { importance } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(evidence !== undefined ? { evidence } : {}),
         ...(title !== undefined ? { title: sanitizeContent(title) } : {}),
         description,
         body,

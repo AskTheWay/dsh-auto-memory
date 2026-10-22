@@ -19,12 +19,13 @@ import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { MemoryStore, INDEX_FILENAME, isStale, memoryScore, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
+import { descriptionSimilarity } from './matching.ts'
 import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
 import type { ImportTarget } from './import-claude.ts'
 import { readAudit, aggregateAudit } from './audit.ts'
 import { indexByteBudget } from './prompt.ts'
 import { homedir } from 'node:os'
-import type { MemoryRecord, MemoryScope, MemoryType } from './types.ts'
+import type { MemoryEvidence, MemoryRecord, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
 
 /** 面板条目(浏览器可见的字段子集)。 */
@@ -37,6 +38,12 @@ export interface PanelMemory {
   disabled: boolean
   /** 软淘汰命中:文件仍存在,但重建索引时不会进入注入(面板需与"生效"区分)。 */
   stale: boolean
+  /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
+  status?: MemoryStatus
+  /** 证据链(固化产物附带;面板验证决策的依据)。 */
+  evidence?: MemoryEvidence
+  /** 创建时间(体检的年龄计算/面板 tooltip)。 */
+  createdMs?: number
   reads: number
   updatedMs?: number
   bytes: number
@@ -112,6 +119,9 @@ async function readGroup(
       pinned: record.pinned === true,
       disabled: record.disabled === true,
       stale: isStale(record, staleAfterDays, now),
+      ...(record.status !== undefined ? { status: record.status } : {}),
+      ...(record.evidence !== undefined ? { evidence: record.evidence } : {}),
+      ...(record.createdMs !== undefined ? { createdMs: record.createdMs } : {}),
       reads: record.reads ?? 0,
       ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
       ...(record.origin !== undefined ? { importedFrom: record.origin.kind } : {}),
@@ -119,6 +129,93 @@ async function readGroup(
     })
   }
   return group
+}
+
+/** 全量记录扫描(health.report 用):与 readGroup 同纪律(symlink 排除/坏文件跳过),但保留完整记录。 */
+async function scanAllRecords(rootDir: string): Promise<Array<{ record: MemoryRecord, scope: MemoryScope, slug: string }>> {
+  const out: Array<{ record: MemoryRecord, scope: MemoryScope, slug: string }> = []
+  const scanDir = async (dir: string, scope: MemoryScope, slug: string): Promise<void> => {
+    let entries
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true })
+    } catch { return }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+      if (entry.name.toLowerCase() === INDEX_FILENAME.toLowerCase()) continue
+      const raw = await fsp.readFile(join(dir, entry.name), 'utf8').catch(() => null)
+      if (raw === null) continue
+      const record = parseMemory(raw, scope)
+      if (record === null) continue
+      out.push({ record, scope, slug })
+    }
+  }
+  await scanDir(join(rootDir, USER_SCOPE_DIR), 'user', USER_SCOPE_DIR)
+  let entries: string[] = []
+  try {
+    entries = await fsp.readdir(rootDir)
+  } catch { return out }
+  for (const entry of entries.sort()) {
+    if (!entry.startsWith('--') || !entry.endsWith('--') || entry === USER_SCOPE_DIR) continue
+    await scanDir(join(rootDir, entry), 'project', entry)
+  }
+  return out
+}
+
+/** 记忆体检报告(1.0.0 可信记忆;三榜,面板 HealthSection 渲染)。 */
+export interface HealthReport {
+  /** 待验证:status=candidate 的记忆(固化产物,引导用户升级 verified)。 */
+  unverified: Array<{ name: string, scope: MemoryScope, slug: string, hasEvidence: boolean }>
+  /** 僵尸:零引用且超过 30 天(从未被任何会话召回过——沉淀即遗忘)。 */
+  zombies: Array<{ name: string, scope: MemoryScope, slug: string, ageDays: number }>
+  /** 矛盾嫌疑:跨层同名 + 同层近重复(description 相似度 ≥0.9)。 */
+  conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate', a: { name: string, scope: MemoryScope }, b: { name: string, scope: MemoryScope } }>
+}
+
+/** 聚合体检三榜(纯函数便于测试;conflicts 的两两比对按 scope 分组、每组限 200 条)。 */
+export function buildHealthReport(entries: Array<{ record: MemoryRecord, scope: MemoryScope, slug: string }>, now = Date.now()): HealthReport {
+  const report: HealthReport = { unverified: [], zombies: [], conflicts: [] }
+  for (const { record, scope, slug } of entries) {
+    if (record.status === 'candidate') {
+      report.unverified.push({ name: record.name, scope, slug, hasEvidence: record.evidence !== undefined })
+    }
+    const ageDays = record.createdMs !== undefined ? Math.floor((now - record.createdMs) / 86_400_000) : 0
+    if ((record.reads ?? 0) === 0 && ageDays > 30 && record.status !== 'disputed' && record.status !== 'superseded') {
+      report.zombies.push({ name: record.name, scope, slug, ageDays })
+    }
+  }
+  // 跨层同名:user 层与项目层同名(findIn 的优先级语义让两者命运取决于查询
+  // 顺序——这正是容易"看着像一条实际是两条"的矛盾温床)
+  const userNames = new Set(entries.filter(e => e.scope === 'user').map(e => e.record.name))
+  const seenProject = new Set<string>()
+  for (const { record, scope } of entries) {
+    if (scope !== 'project') continue
+    if (userNames.has(record.name) && !seenProject.has(record.name)) {
+      seenProject.add(record.name)
+      report.conflicts.push({ kind: 'cross-scope', a: { name: record.name, scope: 'user' }, b: { name: record.name, scope: 'project' } })
+    }
+  }
+  // 同层近重复:O(n²) 有界(每 scope 截 200 条;描述相似度阈值 0.9 收紧——
+  // 0.7 是"同义改写=更新"的合并线,0.9 以上才是"两条并存讲同一件事"的嫌疑)
+  const byScope = new Map<string, Array<{ record: MemoryRecord, scope: MemoryScope, slug: string }>>()
+  for (const e of entries) {
+    const key = `${e.scope} ${e.slug}`
+    const list = byScope.get(key) ?? []
+    if (list.length < 200) list.push(e)
+    byScope.set(key, list)
+  }
+  let reported = 0
+  for (const list of byScope.values()) {
+    for (let i = 0; i < list.length && reported < 20; i++) {
+      for (let j = i + 1; j < list.length && reported < 20; j++) {
+        const a = list[i]!, b = list[j]!
+        if (descriptionSimilarity(a.record.description, b.record.description) >= 0.9) {
+          report.conflicts.push({ kind: 'near-duplicate', a: { name: a.record.name, scope: a.scope }, b: { name: b.record.name, scope: b.scope } })
+          reported += 1
+        }
+      }
+    }
+  }
+  return report
 }
 
 /** 扫描记忆根目录的全部组(用户级在前,项目组按目录名序)。 */
@@ -218,6 +315,7 @@ export function registerMemoryApi(
         const body = (await request.json()) as {
           cwd?: string; scope: MemoryScope; name: string; title?: string
           description: string; type: MemoryType; body: string; pinned?: boolean; disabled?: boolean
+          status?: MemoryStatus
         }
         const cwd = body.scope === 'project' ? body.cwd : undefined
         if (body.scope === 'project' && (cwd === undefined || cwd.length === 0)) {
@@ -232,6 +330,9 @@ export function registerMemoryApi(
         if (body.type !== 'user' && body.type !== 'feedback' && body.type !== 'project' && body.type !== 'reference') {
           return json({ error: 'invalid type' }, 400)
         }
+        if (body.status !== undefined && body.status !== 'candidate' && body.status !== 'verified' && body.status !== 'disputed' && body.status !== 'superseded') {
+          return json({ error: 'invalid status' }, 400)
+        }
         await store.write({
           name,
           title: typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim().slice(0, 80) : undefined,
@@ -239,6 +340,8 @@ export function registerMemoryApi(
           // 停用必须双向透传:只透传 true 会让"取消停用"被丢弃,
           // store 的继承语义随即永远保留旧值(面板停用无反应的根因)
           ...(body.disabled !== undefined ? { disabled: body.disabled } : {}),
+          // 可信状态双向透传(1.0.0):面板 verify/dispute 是唯一的状态流转入口
+          ...(body.status !== undefined ? { status: body.status } : {}),
           description: body.description.trim().slice(0, 160),
           type: body.type,
           body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',
@@ -320,6 +423,16 @@ export function registerMemoryApi(
       // 0.9.1 传 store 标注每条记忆的作用域(注入榜 user/project 可分辨)
       const entries = await readAudit(rootDir)
       return json(aggregateAudit(entries, 50, store))
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/health.report`, methods: ['GET'], requestBody: 'buffered',
+    fetch: async () => {
+      // 记忆体检(1.0.0 可信记忆):待验证/僵尸/矛盾三榜,聚合实现在
+      // buildHealthReport(纯函数,tests/memory-api.spec.ts 覆盖)
+      const all = await scanAllRecords(rootDir)
+      return json(buildHealthReport(all))
     },
   })
 

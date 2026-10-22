@@ -23,6 +23,12 @@ interface PanelMemory {
   disabled: boolean
   /** 软淘汰命中:文件仍在,但不会进入下一次注入索引。 */
   stale: boolean
+  /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
+  status?: string
+  /** 证据链(固化产物附带)。 */
+  evidence?: { sessionId: string; quote: string }
+  /** 创建时间(体检年龄口径)。 */
+  createdMs?: number
   reads: number
   updatedMs?: number
   bytes: number
@@ -65,6 +71,13 @@ interface ImportScanProject {
 /** 条目选择键(slug 与文件名都不含 \u0000,拼接无歧义)。 */
 function importKey(slug: string, file: string): string {
   return `${slug}\u0000${file}`
+}
+
+/** 记忆体检响应形状(health.report,1.0.0)。 */
+interface HealthReportFace {
+  unverified: Array<{ name: string; scope: string; slug: string; hasEvidence: boolean }>
+  zombies: Array<{ name: string; scope: string; slug: string; ageDays: number }>
+  conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
 }
 
 /** 注入审计统计(audit.stats 响应形状,0.9.0;avgBytes/truncatedCount/scope 为 0.9.1 新增,projects 为 0.10.1 新增)。 */
@@ -213,6 +226,51 @@ function projectsFromTimeline(timeline: AuditStatsFace['timeline']): ProjectRow[
  * + 时间线。行一律用固定列网格(作用域圆点/名字/进度条/比例/警告),不再用
  * emoji 徽章——emoji 宽度随平台变化,是之前"项目图标挤歪统计列"的根因。
  */
+/**
+ * 记忆体检卡(1.0.0):待验证/僵尸/矛盾三榜——只读报告,行动在对应记忆卡片上
+ * (卡片带 candidate 徽章与 ✓/⊘ 按钮;行内标注归属层)。
+ */
+function HealthSection({ health, t }: { health: HealthReportFace; t: Translate }): ReactNode {
+  const scopeLabel = (scope: string): string => (scope === 'user' ? t('scopeUser') : t('scopeProject'))
+  return (
+    <details className="dam-health">
+      <summary>
+        <span aria-hidden>🩺</span>
+        <span className="dam-stats-title">{t('healthTitle')}</span>
+        <span className="dam-stats-sub">
+          {health.unverified.length} / {health.zombies.length} / {health.conflicts.length}
+        </span>
+      </summary>
+      <div className="dam-health-body">
+        <p className="dam-section">{t('healthUnverified')}</p>
+        {health.unverified.map(m => (
+          <div key={`u-${m.scope}-${m.slug}-${m.name}`} className="dam-health-row">
+            <span className="dam-badge dam-badge--cand">? {t('statusCandidate')}</span>
+            <code title={m.name}>{m.name}</code>
+            <span className="dam-health-meta">{scopeLabel(m.scope)}{m.hasEvidence ? ' · 📎' : ''}</span>
+          </div>
+        ))}
+        <p className="dam-section">{t('healthZombies')}</p>
+        {health.zombies.map(m => (
+          <div key={`z-${m.scope}-${m.slug}-${m.name}`} className="dam-health-row">
+            <span className="dam-badge dam-badge--muted">💤</span>
+            <code title={m.name}>{m.name}</code>
+            <span className="dam-health-meta">{scopeLabel(m.scope)} · {m.ageDays}d</span>
+          </div>
+        ))}
+        <p className="dam-section">{t('healthConflicts')}</p>
+        {health.conflicts.map((c, i) => (
+          <div key={`c-${String(i)}`} className="dam-health-row">
+            <span className="dam-badge dam-badge--danger">{c.kind === 'cross-scope' ? t('healthCrossScope') : t('healthNearDup')}</span>
+            <code title={c.a.name}>{c.a.name}</code>
+            <span className="dam-health-meta">↔ {c.b.name} ({scopeLabel(c.b.scope)})</span>
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; now: number }): ReactNode {
   type StatsMemory = AuditStatsFace['memories'][number]
   type Scope = NonNullable<StatsMemory['scope']>
@@ -376,7 +434,7 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
 }
 
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
-export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   /** 索引净预算(host 扣掉写入指导/协议壳后返回;旧宿主缺失时回退 maxBytes)。 */
@@ -399,6 +457,8 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const [now, setNow] = useState(() => Date.now())
   /** 注入审计统计(0.9.0;取不到时静默无统计区——审计绝不影响面板可用性)。 */
   const [stats, setStats] = useState<AuditStatsFace | null>(null)
+  /** 记忆体检(1.0.0;旧宿主无路由时 null → 体检区不显示)。 */
+  const [health, setHealth] = useState<HealthReportFace | null>(null)
   /** 导入桥状态机:loading(扫描)→ select(勾选)→ applying → done。 */
   const [importer, setImporter] = useState<ImportState | null>(null)
   /** 扫描请求序号:弹层关闭即作废在途请求,迟到的响应不得复活弹层(审查修复)。 */
@@ -416,10 +476,11 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
     } catch {
       setError(true)
     }
-    try {
-      setStats(await auditStats())
-    } catch { /* 无审计数据(旧版宿主/文件缺失):统计区不显示 */ }
-  }, [list, auditStats])
+    // 三路并行(审查 minor:串行时大库每次操作双倍全扫延迟)
+    const [statsRes, healthRes] = await Promise.allSettled([auditStats(), healthReport()])
+    if (statsRes.status === 'fulfilled') setStats(statsRes.value)
+    if (healthRes.status === 'fulfilled') setHealth(healthRes.value)
+  }, [list, auditStats, healthReport])
 
   useEffect(() => { void load() }, [load])
 
@@ -529,6 +590,23 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       } catch (error) {
         // 项目组非当前工作区时 read 会 400(无 cwd)——必须让用户看见,而非无声吞掉
         console.warn('[auto-memory] read failed, toggle aborted', error)
+        setActionError(t('saveFailed'))
+      }
+    })()
+  }
+
+  /** 可信状态流转(1.0.0):读正文后带 status 整条重写(verify/dispute/restore 共用)。 */
+  const setStatus = (group: PanelGroup, memory: PanelMemory, status: string): void => {
+    void (async () => {
+      try {
+        const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
+        await act(() => write({
+          cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title,
+          description: memory.description, type: memory.type, body: detail.body,
+          pinned: memory.pinned, disabled: memory.disabled, status,
+        }))
+      } catch (error) {
+        console.warn('[auto-memory] status change aborted', error)
         setActionError(t('saveFailed'))
       }
     })()
@@ -683,6 +761,10 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         {memory.pinned && <span className="dam-memory-pin" title={t('pinned')}>📌</span>}
                         {memory.disabled && <span className="dam-badge dam-badge--muted">{t('mutedShort')}</span>}
                         {memory.stale && !memory.disabled && <span className="dam-badge dam-badge--warn">{t('staleShort')}</span>}
+                        {memory.status === 'candidate' && <span className="dam-badge dam-badge--cand" title={t('statusTipCandidate')}>? {t('statusCandidate')}</span>}
+                        {memory.status === 'verified' && <span className="dam-badge dam-badge--ok" title={t('statusVerified')}>✓ {t('statusVerified')}</span>}
+                        {memory.status === 'disputed' && <span className="dam-badge dam-badge--danger" title={t('statusTipDisputed')}>⊘ {t('statusDisputed')}</span>}
+                        {memory.status === 'superseded' && <span className="dam-badge dam-badge--muted" title={t('statusSuperseded')}>⟳ {t('statusSuperseded')}</span>}
                         <span
                           className="dam-memory-time"
                           title={memory.updatedMs !== undefined ? new Date(memory.updatedMs).toLocaleString() : undefined}
@@ -741,6 +823,29 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                     </div>
 
                     {expanded && bodyState?.body !== undefined && <pre className="dam-body dam-memory-body">{bodyState.body}</pre>}
+
+                    {/* 证据链(1.0.0):固化产物的来源会话与逐字摘录——验证决策的依据 */}
+                    {expanded && memory.evidence !== undefined && (
+                      <div className="dam-evidence" title={`${t('evidenceTitle')} · ${memory.evidence.sessionId}`}>
+                        <span className="dam-evidence-label">{t('evidenceTitle')}</span>
+                        <span className="dam-evidence-quote">“{memory.evidence.quote}”</span>
+                      </div>
+                    )}
+
+                    {/* 可信状态操作(1.0.0):candidate→验证/质疑;disputed/superseded→恢复注入 */}
+                    {memory.status === 'candidate' && !readonly && (
+                      <div className="dam-status-actions">
+                        <button type="button" className="dam-btn dam-btn-primary" disabled={busy || actionsDisabled} title={t('statusTipCandidate')} onClick={() => { setStatus(group, memory, 'verified') }}>{t('verifyAction')}</button>
+                        <button type="button" className="dam-btn" disabled={busy || actionsDisabled} onClick={() => { setStatus(group, memory, 'disputed') }}>{t('disputeAction')}</button>
+                      </div>
+                    )}
+                    {(memory.status === 'disputed' || memory.status === 'superseded') && !readonly && (
+                      <div className="dam-status-actions">
+                        {/* 恢复 = 回到 candidate 待验证(而非直接 verified)——
+                            争议内容的复核必须重新过验证,审查确认 verified 太强 */}
+                        <button type="button" className="dam-btn" disabled={busy || actionsDisabled} onClick={() => { setStatus(group, memory, 'candidate') }}>{t('restoreAction')}</button>
+                      </div>
+                    )}
 
                     {confirming && (
                       <div className="dam-memory-confirm">
@@ -883,6 +988,9 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       )}
 
       {stats !== null && stats.injections > 0 && <StatsSection stats={stats} t={t} now={now} />}
+      {health !== null && (health.unverified.length > 0 || health.zombies.length > 0 || health.conflicts.length > 0) && (
+        <HealthSection health={health} t={t} />
+      )}
 
       <div className="dam-groups">
         {userGroups.map(renderGroup)}

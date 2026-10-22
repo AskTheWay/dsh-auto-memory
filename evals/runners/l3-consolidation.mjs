@@ -40,7 +40,7 @@ async function consolidate(existingNames, transcript) {
     body: JSON.stringify({
       model: MODEL,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2048, temperature: 0,
+      max_tokens: 3072, temperature: 0,
     }),
   })
   if (!response.ok) throw new Error(`API ${String(response.status)}: ${(await response.text()).slice(0, 200)}`)

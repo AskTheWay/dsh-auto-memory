@@ -62,7 +62,7 @@ describe('sanitizeCandidate', () => {
       { name: 'User-Prefers-Python', title: '偏好 Python', description: ' d ', type: 'user', body: ' b ', scope: 'project' },
       true,
     )
-    expect(out).toEqual({ name: 'user-prefers-python', title: '偏好 Python', description: 'd', type: 'user', body: 'b', scope: 'project' })
+    expect(out).toEqual({ name: 'user-prefers-python', title: '偏好 Python', description: 'd', type: 'user', body: 'b', scope: 'project', status: 'candidate' })
   })
   it('不可归一化 name(中文)丢弃', () => {
     expect(sanitizeCandidate({ name: '中文', description: 'd', type: 'user', body: 'b' }, true)).toBeNull()

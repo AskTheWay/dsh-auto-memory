@@ -11,6 +11,23 @@ export type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
 export type MemoryScope = 'project' | 'user'
 
 /**
+ * 记忆可信状态(1.0.0 可信记忆)。缺省(undefined)= 信任态:旧文件与用户
+ * 显式写入(memory_write"记住 X")行为完全不变;固化产物默认 candidate
+ * (模型推断、未经验证——照常注入,由体检榜引导用户升级为 verified)。
+ * 状态流转纪律:**verified 只能由用户在面板授予**——模型不能给自己背书
+ * (社区共识:"verified 必须定义谁在什么证据下验证的,否则是给幻觉镀金")。
+ */
+export type MemoryStatus = 'candidate' | 'verified' | 'disputed' | 'superseded'
+
+/** 可信状态的证据链:这条记忆"从哪来、凭什么信"。 */
+export interface MemoryEvidence {
+  /** 产生这条记忆的会话(固化的源会话;面板点击可定位)。 */
+  sessionId: string
+  /** 支撑该事实的转写逐字摘录(1-2 句;LLM 提供并经清洗,非逐字保证时诚实降级)。 */
+  quote: string
+}
+
+/**
  * 记忆来源(导入溯源):记录"这条记忆是从哪里导进来的"。
  * 撤销导入时据此判断来源是否匹配;`hash` 是导入时的内容指纹,任何写入路径
  * 都继承原值、绝不重算——指纹与当前内容不一致即"导入后被改过",撤销时保留。
@@ -48,6 +65,10 @@ export interface MemoryRecord {
   disabled?: boolean
   /** 重要度 1-10(三因子排序用;固化时 LLM 显式打分,缺省按类型映射)。 */
   importance?: number
+  /** 可信状态(缺省=信任态);disputed/superseded 不注入。 */
+  status?: MemoryStatus
+  /** 证据链(固化时生成;候选验证状态的用户依据)。 */
+  evidence?: MemoryEvidence
   /** 导入溯源(缺省 = 非导入记忆);仅导入桥写入,撤销导入据此判定。 */
   origin?: MemoryOrigin
   /** 生命周期元数据(P1 遗忘策略用;旧文件缺省时由解析层补全)。 */
