@@ -65,12 +65,17 @@ describe('aggregateAudit', () => {
     expect(stats.sessions).toBe(2)
     expect(stats.injections).toBe(3)
     expect(stats.avgBytes).toBe(8) // (10 + 5 + 8) / 3 四舍五入
-    expect(stats.memories[0]).toEqual({ name: 'x', injectedCount: 3, truncatedCount: 0, lastTs: 3 })
+    expect(stats.memories[0]).toEqual({ name: 'x', injectedCount: 3, truncatedCount: 0, lastTs: 3, scope: 'missing' })
     expect(stats.memories[1]?.name).toBe('y')
     // 只出现在截断名单里的记忆也留在榜内(截断次数是区分度来源)
-    expect(stats.memories.find(m => m.name === 'z')).toEqual({ name: 'z', injectedCount: 0, truncatedCount: 1, lastTs: 0 })
+    expect(stats.memories.find(m => m.name === 'z')).toEqual({ name: 'z', injectedCount: 0, truncatedCount: 1, lastTs: 0, scope: 'missing' })
     expect(stats.timeline.length).toBe(3)
     expect(stats.timeline[0]?.truncated).toBe(1) // 截断名单在首条(ts=1)
+    // 按项目聚合:注入次数降序;distinct 记忆数含截断名单;平均字节按项目算
+    expect(stats.projects).toEqual([
+      { cwd: '/p', sessions: 1, injections: 2, avgBytes: 8, memories: 3, truncated: 1, lastTs: 2 },
+      { cwd: '/q', sessions: 1, injections: 1, avgBytes: 8, memories: 2, truncated: 0, lastTs: 3 },
+    ])
   })
 })
 

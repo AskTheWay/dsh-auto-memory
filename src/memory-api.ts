@@ -17,12 +17,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
-import { MemoryStore, INDEX_FILENAME, parseMemory, projectKey } from './store.ts'
+import { MemoryStore, INDEX_FILENAME, isStale, memoryScore, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
-import { scanClaudeMemory, runClaudeImport } from './import-claude.ts'
+import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
+import type { ImportTarget } from './import-claude.ts'
 import { readAudit, aggregateAudit } from './audit.ts'
+import { indexByteBudget } from './prompt.ts'
 import { homedir } from 'node:os'
-import type { MemoryScope, MemoryType } from './types.ts'
+import type { MemoryRecord, MemoryScope, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
 
 /** 面板条目(浏览器可见的字段子集)。 */
@@ -33,9 +35,13 @@ export interface PanelMemory {
   type: MemoryType
   pinned: boolean
   disabled: boolean
+  /** 软淘汰命中:文件仍存在,但重建索引时不会进入注入(面板需与"生效"区分)。 */
+  stale: boolean
   reads: number
   updatedMs?: number
   bytes: number
+  /** 导入溯源(仅来源种类;完整 slug/file 不回显给浏览器)。 */
+  importedFrom?: 'claude-code'
 }
 
 /** 一组记忆(用户级或某个项目 slug)。 */
@@ -54,7 +60,13 @@ export interface PanelGroup {
 const BASE = '/api/auto-memory'
 
 /** 列出一个目录组(读文件,畸形/符号链接跳过——与 store.list 同纪律)。 */
-async function readGroup(dir: string, scope: MemoryScope, slug: string): Promise<PanelGroup> {
+async function readGroup(
+  dir: string,
+  scope: MemoryScope,
+  slug: string,
+  staleAfterDays: number,
+  now: number,
+): Promise<PanelGroup> {
   const group: PanelGroup = { key: slug, scope, slug, memories: [], indexBytes: 0, indexText: null }
   let entries
   try {
@@ -64,6 +76,7 @@ async function readGroup(dir: string, scope: MemoryScope, slug: string): Promise
   } catch {
     return group
   }
+  const records: Array<{ record: MemoryRecord, bytes: number }> = []
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue
     const file = join(dir, entry.name)
@@ -77,6 +90,20 @@ async function readGroup(dir: string, scope: MemoryScope, slug: string): Promise
     }
     const record = parseMemory(raw, scope)
     if (record === null) continue
+    records.push({ record, bytes: Buffer.byteLength(raw, 'utf8') })
+  }
+  // 排序口径与 renderIndexBody 完全一致:pinned → 三因子分(importance×recency)
+  // → name。面板顺序=模型看到的索引顺序,置顶以下的"为什么这条在前面"可解释。
+  records.sort((a, b) => {
+    const pa = a.record.pinned === true ? 0 : 1
+    const pb = b.record.pinned === true ? 0 : 1
+    if (pa !== pb) return pa - pb
+    const sa = memoryScore(a.record, now)
+    const sb = memoryScore(b.record, now)
+    if (sa !== sb) return sb - sa
+    return a.record.name < b.record.name ? -1 : a.record.name > b.record.name ? 1 : 0
+  })
+  for (const { record, bytes } of records) {
     group.memories.push({
       name: record.name,
       ...(record.title !== undefined ? { title: record.title } : {}),
@@ -84,18 +111,20 @@ async function readGroup(dir: string, scope: MemoryScope, slug: string): Promise
       type: record.type,
       pinned: record.pinned === true,
       disabled: record.disabled === true,
+      stale: isStale(record, staleAfterDays, now),
       reads: record.reads ?? 0,
       ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
-      bytes: Buffer.byteLength(raw, 'utf8'),
+      ...(record.origin !== undefined ? { importedFrom: record.origin.kind } : {}),
+      bytes,
     })
   }
-  group.memories.sort((a, b) => (a.pinned === b.pinned ? (a.name < b.name ? -1 : 1) : a.pinned ? -1 : 1))
   return group
 }
 
 /** 扫描记忆根目录的全部组(用户级在前,项目组按目录名序)。 */
-export async function scanGroups(rootDir: string): Promise<PanelGroup[]> {
-  const groups: PanelGroup[] = [await readGroup(join(rootDir, USER_SCOPE_DIR), 'user', USER_SCOPE_DIR)]
+export async function scanGroups(rootDir: string, staleAfterDays = 0): Promise<PanelGroup[]> {
+  const now = Date.now()
+  const groups: PanelGroup[] = [await readGroup(join(rootDir, USER_SCOPE_DIR), 'user', USER_SCOPE_DIR, staleAfterDays, now)]
   let entries: string[]
   try {
     entries = await fsp.readdir(rootDir)
@@ -105,15 +134,42 @@ export async function scanGroups(rootDir: string): Promise<PanelGroup[]> {
   for (const entry of entries.sort()) {
     if (!entry.startsWith('--') || !entry.endsWith('--')) continue
     if (entry === USER_SCOPE_DIR) continue
-    groups.push(await readGroup(join(rootDir, entry), 'project', entry))
+    groups.push(await readGroup(join(rootDir, entry), 'project', entry, staleAfterDays, now))
   }
   return groups.filter(group => group.memories.length > 0 || group.indexText !== null)
 }
 
+/**
+ * 解析条目级导入目标({slug,file} 数组)。undefined → [];畸形 → null(调用方
+ * 400)。与 slugs 校验同款 fail-closed 纪律:静默降级成"全部撤销"是最坏方向。
+ */
+function parseImportTargets(value: unknown): ImportTarget[] | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return null
+  const targets: ImportTarget[] = []
+  for (const raw of value) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+    const item = raw as { slug?: unknown, file?: unknown }
+    if (typeof item.slug !== 'string' || item.slug.length === 0 || item.slug.length > 512) return null
+    if (typeof item.file !== 'string' || item.file.length === 0 || item.file.length > 512) return null
+    targets.push({ slug: item.slug, file: item.file })
+  }
+  return targets
+}
+
 /** 注册面板 API(宿主半入口;无 connection 服务时 no-op)。 */
-export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: string, config: { maxBytes: number }): void {
+export function registerMemoryApi(
+  ctx: Context,
+  store: MemoryStore,
+  rootDir: string,
+  // homeDir 仅测试注入用(Claude 记忆扫描根 = homeDir/.claude/projects);生产取 homedir()
+  // staleAfterDays 与注入路径同源,面板才能标出"陈旧未注入"的记忆
+  config: { maxBytes: number, homeDir?: string, staleAfterDays?: number },
+): void {
   const connection = ctx.get('connection')
   if (connection === undefined) return // 非 web 组合:面板不存在,不注册
+  const home = config.homeDir ?? homedir()
+  const staleAfterDays = config.staleAfterDays ?? 0
 
   const json = (data: unknown, status = 200): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify(data), {
@@ -125,14 +181,15 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
     path: `${BASE}/groups.list`, methods: ['GET'], requestBody: 'buffered',
     fetch: async (request) => {
       const cwd = new URL(request.url).searchParams.get('cwd') ?? undefined
-      const groups = await scanGroups(rootDir)
+      const groups = await scanGroups(rootDir, staleAfterDays)
       if (cwd !== undefined && cwd.length > 0) {
         const currentSlug = projectKey(cwd)
         for (const group of groups) {
           if (group.scope === 'project' && group.slug === currentSlug) group.current = true
         }
       }
-      return json({ groups, maxBytes: config.maxBytes })
+      // budgetBytes = 索引净预算(已扣写入指导/协议壳);面板用量条与注入同一口径
+      return json({ groups, maxBytes: config.maxBytes, budgetBytes: indexByteBudget(config.maxBytes) })
     },
   })
 
@@ -196,9 +253,11 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
   connection.fetch.register({
     path: `${BASE}/import.claude.scan`, methods: ['GET'], requestBody: 'buffered',
     fetch: async () => {
-      // 只读扫描:遍历 ~/.claude/projects/*/memory,返回逐项目预览(条数/目标层),
-      // 无任何写副作用——用户在面板确认后才调 import.claude.run
-      const scan = await scanClaudeMemory(homedir())
+      // 只读扫描:遍历 ~/.claude/projects/*/memory,返回逐项目/逐条预览(目标层、
+      // 导入状态),无任何写副作用——用户在面板确认后才调 import.claude.apply。
+      // annotate 阶段读本插件记忆库,给每条补 pending/imported/modified/conflict,
+      // 面板据此把"取消勾选"翻译成"撤销哪条导入"。
+      const scan = await annotateClaudeImport(store, await scanClaudeMemory(home))
       return json({
         found: scan.totalImportable > 0,
         totalImportable: scan.totalImportable,
@@ -209,30 +268,45 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
           // 目标层提示:有 cwd → 项目层(目录名预展示);无 → 用户层
           targetScope: p.cwd !== null ? 'project' : 'user',
           targetDir: p.cwd !== null ? projectKey(p.cwd) : '_user',
+          // 不可解析文件不进预览:它们既不能导入也不能撤销,展示只会制造噪音
+          files: p.files.filter(f => f.ok).map(f => ({
+            file: f.file,
+            name: f.name ?? f.file,
+            description: f.description ?? '',
+            type: f.type ?? 'reference',
+            state: f.state ?? 'pending',
+          })),
         })),
       })
     },
   })
 
   connection.fetch.register({
-    path: `${BASE}/import.claude.run`, methods: ['POST'], requestBody: 'buffered',
+    path: `${BASE}/import.claude.apply`, methods: ['POST'], requestBody: 'buffered',
     fetch: async (request) => {
       try {
-        const body = (await request.json()) as { slugs?: unknown; allToUser?: unknown }
-        // 与 memory.write 同款严格校验纪律:slugs 传了就必须是纯字符串数组——
-        // 静默降级成"导入全部"是最坏方向的 fail-open(审查确认)
-        let slugs: string[] | undefined
-        if (body.slugs !== undefined) {
-          if (!Array.isArray(body.slugs) || !body.slugs.every((s): s is string => typeof s === 'string')) {
-            return json({ error: 'slugs must be an array of strings' }, 400)
-          }
-          slugs = body.slugs
+        const body = (await request.json()) as { items?: unknown, revoke?: unknown, allToUser?: unknown }
+        // 与 memory.write 同款严格校验纪律:两项都必须是无歧义的目标数组
+        const items = parseImportTargets(body.items)
+        const revoke = parseImportTargets(body.revoke)
+        if (items === null || revoke === null) {
+          return json({ error: 'items/revoke must be arrays of {slug, file}' }, 400)
         }
         const allToUser = body.allToUser === true
-        const scan = await scanClaudeMemory(homedir())
+        const scan = await annotateClaudeImport(store, await scanClaudeMemory(home))
         if (scan.projects.length === 0) return json({ error: 'nothing to import' }, 400)
-        const result = await runClaudeImport(store, scan, { ...(slugs !== undefined ? { slugs } : {}), allToUser })
-        return json({ ok: true, ...result })
+        // 先导入后撤销:勾选的项目可能同时含新条目与已导入条目,两者互不相交
+        const result = await runClaudeImport(store, scan, { files: items, allToUser })
+        const revocation = await revokeClaudeImports(store, scan, revoke)
+        return json({
+          ok: true,
+          ...result,
+          revoked: revocation.revoked,
+          // 撤销时发现已改 / 找不到的记录:一条都不删,如实回传供 UI 说明
+          keptModified: revocation.modified,
+          revokeMissing: revocation.missing,
+          revokeFailed: revocation.failed,
+        })
       } catch (error) {
         return json({ error: String(error) }, 400)
       }
@@ -242,9 +316,10 @@ export function registerMemoryApi(ctx: Context, store: MemoryStore, rootDir: str
   connection.fetch.register({
     path: `${BASE}/audit.stats`, methods: ['GET'], requestBody: 'buffered',
     fetch: async () => {
-      // 注入审计统计(0.9.0):读 audit.jsonl 聚合,坏行已在读取层跳过
+      // 注入审计统计(0.9.0):读 audit.jsonl 聚合,坏行已在读取层跳过;
+      // 0.9.1 传 store 标注每条记忆的作用域(注入榜 user/project 可分辨)
       const entries = await readAudit(rootDir)
-      return json(aggregateAudit(entries))
+      return json(aggregateAudit(entries, 50, store))
     },
   })
 

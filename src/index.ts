@@ -65,7 +65,10 @@ export function apply(ctx: Context, config: Config): void {
   // 加载顺序晚于本插件——用 inject 回调等待服务就绪再注册(非 web 组合永不回调)。
   // 回调使用框架给的 fiber ctx 注册,依赖消失时路由 effect 随作用域自动回收。
   ctx.inject(['connection'], fiberCtx => {
-    registerMemoryApi(fiberCtx, store, rootDir, { maxBytes: config.maxBytes })
+    registerMemoryApi(fiberCtx, store, rootDir, {
+      maxBytes: config.maxBytes,
+      staleAfterDays: config.staleAfterDays,
+    })
   })
 
   // P1:会话结束自动固化(autoSummarize=false 时 no-op)

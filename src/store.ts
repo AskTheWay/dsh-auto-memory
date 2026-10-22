@@ -16,10 +16,11 @@
  */
 
 import { promises as fsp, lstatSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { writeFileAtomic, withFileLock } from '@deepseek-ai/dsh-atomic-write'
-import type { MemoryRecord, MemoryScope, MemoryType } from './types.ts'
+import type { MemoryOrigin, MemoryRecord, MemoryScope, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
 
 const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'] as const
@@ -140,6 +141,34 @@ function parseFrontmatter(raw: string): { data: Record<string, unknown>; body: s
 }
 
 /**
+ * 解析导入溯源块;任何字段缺失/非法一律返回 undefined(按"无来源"处理,
+ * 即不可撤销——fail-closed 方向:宁可撤销不了,也不能删错记忆)。
+ */
+export function parseOrigin(value: unknown): MemoryOrigin | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  if (raw.kind !== 'claude-code') return undefined
+  // 路径型标识限长:前端/面板永不回显该字段,但坏数据不应无限膨胀 frontmatter
+  if (typeof raw.slug !== 'string' || raw.slug.length === 0 || raw.slug.length > 512) return undefined
+  if (typeof raw.file !== 'string' || raw.file.length === 0 || raw.file.length > 512) return undefined
+  if (typeof raw.imported !== 'number' || !Number.isSafeInteger(raw.imported) || raw.imported <= 0) return undefined
+  if (typeof raw.hash !== 'string' || !/^[0-9a-f]{16}$/.test(raw.hash)) return undefined
+  return { kind: 'claude-code', slug: raw.slug, file: raw.file, importedMs: raw.imported, hash: raw.hash }
+}
+
+/**
+ * 导入内容指纹(纯函数):type + 清洗后 description/body 的 sha256 前 16 位。
+ * 写入路径全量继承导入时的值;撤销导入时与当前内容重算值比对,不等即视为
+ * "导入后被改过"。长度 16 hex 足够(撤销是单机、按条比对,无碰撞压力)。
+ */
+export function contentFingerprint(fields: Pick<MemoryRecord, 'description' | 'type' | 'body'>): string {
+  return createHash('sha256')
+    .update(`${fields.type}\n${fields.description.trim()}\n${fields.body.trim()}`)
+    .digest('hex')
+    .slice(0, 16)
+}
+
+/**
  * 解析单个记忆文件内容;任何畸形(含不可归一化的 name)一律返回 null,
  * 绝不抛错——单个坏文件不得砖掉 list/write/delete(审查确认的 major 修复)。
  * 生命周期元数据(created/updated/lastRead/reads,毫秒)非法时静默忽略。
@@ -150,7 +179,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -159,6 +188,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
     const asImportance = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 10 ? value : undefined
+    const parsedOrigin = parseOrigin(origin)
     return {
       name: normalizeName(name),
       title: typeof title === 'string' && title.trim().length > 0 ? title.trim() : undefined,
@@ -169,6 +199,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       ...(pinned === true ? { pinned: true } : {}),
       ...(disabled === true ? { disabled: true } : {}),
       ...(asImportance(importance) !== undefined ? { importance: asImportance(importance) } : {}),
+      ...(parsedOrigin !== undefined ? { origin: parsedOrigin } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
       lastReadMs: asMs(lastRead),
@@ -189,6 +220,16 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     ...(record.pinned === true ? { pinned: true } : {}),
     ...(record.disabled === true ? { disabled: true } : {}),
     ...(record.importance !== undefined ? { importance: record.importance } : {}),
+    // 导入溯源(嵌套块):字段名短、YAML 正确转义;缺省即普通记忆
+    ...(record.origin !== undefined ? {
+      origin: {
+        kind: record.origin.kind,
+        slug: record.origin.slug,
+        file: record.origin.file,
+        imported: record.origin.importedMs,
+        hash: record.origin.hash,
+      },
+    } : {}),
     ...(record.createdMs !== undefined ? { created: record.createdMs } : {}),
     ...(record.updatedMs !== undefined ? { updated: record.updatedMs } : {}),
     ...(record.lastReadMs !== undefined ? { lastRead: record.lastReadMs } : {}),
@@ -348,6 +389,13 @@ export { descriptionSimilarity } from './matching.ts'
  * 记忆存储:管理 memoryDir 下两层目录。
  * 布局:memoryDir/--<project-slug>--/*.md 与 memoryDir/_user/*.md(各含 MEMORY.md)。
  */
+/** write 入参:origin 只提供来源三要素,内容指纹由 store 清洗后计算。 */
+export interface MemoryWriteInput extends Omit<MemoryRecord, 'scope' | 'origin'> {
+  /** 导入桥专用:目标层已有同名记忆时放弃写入(锁内判定,返回 null)。 */
+  onlyIfAbsent?: boolean
+  origin?: Omit<MemoryOrigin, 'hash'>
+}
+
 export class MemoryStore {
   constructor(rootDir: string, options?: { staleAfterDays?: number }) {
     this.rootDir = rootDir
@@ -414,7 +462,7 @@ export class MemoryStore {
    * 锁对象是索引文件:同一 workspace 的写/删串行化,跨进程安全;
    * 孤儿锁(Ctrl+C/崩溃残留)自动回收(见 withLockRecovery)。
    */
-  async write(record: Omit<MemoryRecord, 'scope'> & { onlyIfAbsent?: boolean }, scope: MemoryScope, cwd?: string): Promise<MemoryRecord | null> {
+  async write(record: MemoryWriteInput, scope: MemoryScope, cwd?: string): Promise<MemoryRecord | null> {
     const dir = this.dir(scope, cwd)
     const file = join(dir, `${record.name}.md`)
     // withFileLock 要求父目录已存在,先建目录再取锁
@@ -437,14 +485,26 @@ export class MemoryStore {
       const title = record.title ?? existing?.title
       // 安全包:所有写入路径统一过脱敏 + 协议标签防护(单点拦截,含 title——
       // title 进索引行即注入内容,绕过即穿透壳/泄密,审查 blocker)
-      written = {
-        ...record,
+      const description = sanitizeContent(record.description)
+      const body = sanitizeContent(record.body)
+      // 导入溯源:首次导入按清洗后内容算指纹;后续任何写入(工具/固化/面板
+      // 置顶停用)原样继承首次指纹,绝不重算——指纹只标记"导入瞬间的内容",
+      // 撤销时用它判定这条是否已被改过。内容更新不重算 ≠ 指纹失效,比对时
+      // 当前内容重算值自然对不上,落进"已修改,保留"分支。
+      const origin: MemoryOrigin | undefined = record.origin !== undefined
+        ? { ...record.origin, hash: contentFingerprint({ description, type: record.type, body }) }
+        : existing?.origin
+      // origin/onlyIfAbsent 是 write 入参专用字段,不落盘;先剥离再展开
+      const fields: Omit<MemoryRecord, 'scope' | 'origin'> = record
+      const next: MemoryRecord = {
+        ...fields,
         ...(pinned === true ? { pinned: true } : {}),
         ...(disabled === true ? { disabled: true } : {}),
         ...(importance !== undefined ? { importance } : {}),
         ...(title !== undefined ? { title: sanitizeContent(title) } : {}),
-        description: sanitizeContent(record.description),
-        body: sanitizeContent(record.body),
+        description,
+        body,
+        ...(origin !== undefined ? { origin } : {}),
         ...mergeLifecycleMeta(existing, Date.now()),
         // 显式传入的时间戳优先(导入桥保留 Claude 原始 modified;
         // 现有写入路径不传,行为不变——mergeLifecycleMeta 的 now 语义照旧)
@@ -452,7 +512,8 @@ export class MemoryStore {
         ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
         scope,
       }
-      await writeFileAtomic(file, serializeMemory(written), { mode: 0o600, dirMode: 0o700 })
+      written = next
+      await writeFileAtomic(file, serializeMemory(next), { mode: 0o600, dirMode: 0o700 })
       await this.rebuildIndex(scope, cwd)
     })
     // onlyIfAbsent 命中(锁内提前 return)时 written 未赋值 → null 表示未写入
@@ -556,6 +617,40 @@ export class MemoryStore {
       })
     } catch (error) {
       // 目录在 stat 与取锁之间被外部删除:归一化为"无记忆可删"
+      if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false
+      throw error
+    }
+    return removed
+  }
+
+  /**
+   * 条件删除:锁内重新解析记录并执行 predicate,满足才 unlink + 重建索引。
+   * 撤销导入专用——"来源匹配 + 内容指纹未变"的判定与删除必须在同一锁窗口内,
+   * 否则扫描与删除之间的编辑会被静默抹掉(与 onlyIfAbsent 同一套 TOCTOU 纪律)。
+   * 文件不存在/被并发删除返回 false。
+   */
+  async deleteIf(
+    name: string,
+    scope: MemoryScope,
+    cwd: string | undefined,
+    predicate: (record: MemoryRecord) => boolean,
+  ): Promise<boolean> {
+    const dir = this.dir(scope, cwd)
+    const file = join(dir, `${normalizeName(name)}.md`)
+    let removed = false
+    try {
+      await withLockRecovery(join(dir, INDEX_FILENAME), async () => {
+        const record = parseMemory(await fsp.readFile(file, 'utf8').catch(() => ''), scope)
+        if (record === null || !predicate(record)) return
+        try {
+          await fsp.unlink(file)
+        } catch {
+          return
+        }
+        removed = true
+        await this.rebuildIndex(scope, cwd)
+      })
+    } catch (error) {
       if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false
       throw error
     }

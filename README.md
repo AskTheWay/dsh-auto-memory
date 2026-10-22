@@ -67,6 +67,23 @@ following Claude Code's write discipline: **dedupe-and-update over piling up**,
 absolute dates only, `[[name]]` cross-links, `feedback` memories carry
 **Why:** / **How to apply:** lines.
 
+## Import from Claude Code — and take it back
+
+The panel's **📥 Import from Claude Code** button scans
+`~/.claude/projects/*/memory` read-only and lists every memory grouped by source
+project. Tick what you want and apply: fields map one-to-one (same four types,
+H1 → title, ISO `modified` → epoch), same-name memories are skipped, never
+overwritten.
+
+Imported files carry an `origin` block (`kind` / `slug` / `file` / `imported` /
+`hash`) in their frontmatter, so the checkbox becomes reversible: uncheck an
+already-imported memory and apply, and it is deleted from this plugin — the
+Claude Code source stays untouched and can be re-imported any time. If the
+memory was edited after import, the content fingerprint no longer matches; the
+entry is marked **modified** and kept, never silently discarded. Memories
+imported by earlier versions (no `origin` block) are recognised by exact content
+equality and marked **legacy import**, so they can be revoked the same way.
+
 ## What the model actually sees
 
 Every request, one system-prompt section (order 4000) carries the index —

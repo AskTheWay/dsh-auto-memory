@@ -6,6 +6,73 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [0.10.0] - 2026-10-20
+
+### Added
+
+- **Revocable Claude Code import** — the import dialog is now a per-memory sync
+  instead of a one-way, per-project import. Every imported file carries an
+  `origin` block in its frontmatter (`kind`, source `slug`, source `file`,
+  import time, content fingerprint). The scan annotates each row as
+  *pending* / *imported* / *modified* / *conflict*; **Apply** imports ticked
+  new entries and deletes unticked previously-imported ones in the same round
+  trip. Same-name skipping and the store security layer are unchanged.
+- **Edit-safe revocation** — the delete predicate (`origin` match + content
+  fingerprint) runs inside the same store lock as the unlink, so a memory
+  edited after import is kept and labelled **modified** instead of being
+  silently destroyed. Metadata-only changes (pin/mute) keep the memory
+  revocable; cross-layer revocation finds imports that landed in user scope via
+  `all-to-user` or a cold source project.
+- **Legacy imports are revocable too** — memories imported by 0.8.0/0.9.x have
+  no `origin` block. They are matched by exact content equality with the source
+  and labelled **legacy import**, so unchecking revokes them as well; as soon as
+  the content diverges they fall back to **name taken** and are kept.
+- **Panel display logic** — memory cards now sort exactly like the injected
+  index (pinned → importance×recency → name) instead of alphabetically; the
+  usage bar measures only the user + current-project indexes actually injected,
+  against the net budget after policy/shell overhead; stale memories get their
+  own **stale (not in index)** state; non-current workspaces render read-only
+  instead of failing with a save error; project slugs are shortened with the
+  full value in a tooltip.
+- **Panel interactions** — per-type filter chips next to the scope chips,
+  "shown / total" counts while filtering, click-to-expand card bodies (lazy
+  `memory.read`, cached), and compact byte counts per group.
+- **Panel layout rebuilt** — the two-column card grid is gone: one column of
+  collapsible group sections (non-current workspaces start collapsed), compact
+  memory rows with hover/focus action icons and inline body expansion, a
+  header with primary actions, a segmented scope control plus a type select,
+  a modal import dialog (backdrop/Escape to close), and a cleaner empty state.
+  The whole panel is left-aligned in a max-width shell (no centered column),
+  and the injection-stats card sits above the memory groups. Exact timestamps
+  live in the row tooltip; group headers keep icon/title/meta columns aligned.
+- **Redesigned injection stats** — the three boxed metrics merge into one
+  segmented strip; the dot matrix is replaced by per-memory ratio bars on a
+  fixed-column grid (scope dot / name / bar / count / warning), so mixed
+  user/project rows line up regardless of glyph widths; the truncation board
+  and timeline use the same alignment and compact pills. Group headers reserve
+  fixed icon/name/meta columns, so the counts on the right align across groups.
+- **Per-project statistics** — `audit.stats` now aggregates by workspace
+  (`sessions`, `injections`, `avgBytes`, distinct `memories`, `truncated`,
+  `lastTs`); the panel renders a **By project** table with a relative injection
+  bar in a stable per-project color, answering "which workspace drives prompt
+  cost and truncation".
+- **Scope/type color coding** — user (blue), project (violet), both
+  (blue→violet gradient), not-in-index (slate); type filter chips carry their
+  own colors; group cards get a left accent (user blue, project violet, current
+  project green) so layers are distinguishable at a glance.
+- Panel memory cards mark Claude-imported entries with 📥.
+
+### Changed
+
+- `import.claude.run` (slug-level) is replaced by `import.claude.apply`
+  (`items` / `revoke` arrays of `{slug, file}`). Malformed payloads are rejected
+  with 400 instead of degrading to "all".
+- `groups.list` now returns `budgetBytes` (net index budget) and per-memory
+  `stale`, and sorts memories by the injection score.
+- Tests 150 → 168: store origin inheritance/round-trip, annotate state machine,
+  revocation semantics (including legacy content-match), host route round trip,
+  panel ordering/stale/budget.
+
 ## [0.9.0] - 2026-10-19
 
 ### Added
@@ -315,3 +382,4 @@ page (generated from this file at publish time).
 [0.7.2]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.7.2
 [0.8.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.8.0
 [0.9.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.9.0
+[0.10.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.10.0

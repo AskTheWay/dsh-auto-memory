@@ -1,5 +1,8 @@
 /**
  * 0.8.0:Claude Code 记忆导入桥(scan → 预览确认 → run)。
+ * 0.10.0:导入溯源与撤销——每条导入记忆在 frontmatter 记 `origin`(slug/源文件/
+ * 导入时间/内容指纹),面板按条目勾选;取消勾选已导入条目即撤销(删除)该条,
+ * 导入后被编辑过的(指纹对不上)一律保留,只标注"已修改"。
  *
  * 背景:官方讨论区记忆类第一诉求是"把 Claude Code/Codex 的 memory 迁移
  * 过来"(#14);本插件数据模型与 Claude Code auto-memory 同构(MEMORY.md
@@ -29,9 +32,9 @@ import { promises as fsp } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { normalizeName, projectKey } from './store.ts'
+import { contentFingerprint, normalizeName, projectKey, redactSecrets, stripMemoryTags } from './store.ts'
 import type { MemoryStore } from './store.ts'
-import type { MemoryType } from './types.ts'
+import type { MemoryRecord, MemoryScope, MemoryType } from './types.ts'
 
 const MEMORY_TYPES = new Set(['user', 'feedback', 'project', 'reference'])
 /** jsonl 头部读取上限:cwd 在首条记录就有,绝不整读数十 MB 的会话日志。 */
@@ -47,11 +50,32 @@ export interface ClaudeImportItem {
   modifiedMs?: number
 }
 
+/** 单条源记忆在目标层的关联状态(撤销导入的依据)。 */
+export type ClaudeFileState =
+  /** 目标层尚无同名记忆:勾选 = 导入。 */
+  | 'pending'
+  /** 就是这条导入的,且导入后内容未变:取消勾选 = 撤销(删除)。 */
+  | 'imported'
+  /** 来源匹配但内容指纹已变(导入后被编辑):保留,不可自动撤销。 */
+  | 'modified'
+  /** 0.8.0 旧导入(无 origin)但内容与源完全一致:可撤销。 */
+  | 'legacy'
+  /** 同名记忆已被别的来源/手工写入占用:保留,不导入也不撤销。 */
+  | 'conflict'
+
 /** 单文件解析预检结果(供 scan 预览,不落盘)。 */
 export interface ScannedFile {
   file: string
   ok: boolean
   reason?: string
+  /** 解析出的目标记忆名(ok 时必有)。 */
+  name?: string
+  description?: string
+  type?: MemoryType
+  /** 源内容指纹(与落盘指纹同口径);识别 0.8.0 无 origin 的旧导入用。 */
+  fingerprint?: string
+  /** 目标层关联状态;scan 阶段留空,annotateClaudeImport 填充。 */
+  state?: ClaudeFileState
 }
 
 /** 一个 Claude 项目的扫描结果。 */
@@ -126,6 +150,15 @@ export function parseClaudeMemory(raw: string, fallbackName: string): ClaudeImpo
   }
 }
 
+/** 源内容指纹:与 store 落盘指纹同口径(先脱敏/剥标签,再算 type+desc+body)。 */
+function sourceFingerprint(item: ClaudeImportItem): string {
+  return contentFingerprint({
+    description: stripMemoryTags(redactSecrets(item.description)),
+    type: item.type,
+    body: stripMemoryTags(redactSecrets(item.body)),
+  })
+}
+
 /**
  * 从项目目录的 session jsonl 头部提取真实 cwd(流式读 CWD_HEAD_BYTES;
  * 逐行 JSON.parse,首个含 cwd 的记录胜出)。无 jsonl / 无 cwd → null。
@@ -181,8 +214,10 @@ export async function scanClaudeMemory(homeDir: string): Promise<ClaudeScanResul
     for (const file of files) {
       const raw = await fsp.readFile(join(memoryDir, file), 'utf8').catch(() => null)
       if (raw === null) { scanned.push({ file, ok: false, reason: 'unreadable' }); continue }
-      const ok = parseClaudeMemory(raw, file.replace(/\.md$/i, '')) !== null
-      scanned.push({ file, ok, ...(ok ? {} : { reason: 'unparsable' }) })
+      const item = parseClaudeMemory(raw, file.replace(/\.md$/i, ''))
+      scanned.push(item === null
+        ? { file, ok: false, reason: 'unparsable' }
+        : { file, ok: true, name: item.name, description: item.description, type: item.type, fingerprint: sourceFingerprint(item) })
     }
     const importable = scanned.filter(s => s.ok).length
     if (importable === 0) continue
@@ -197,10 +232,138 @@ export async function scanClaudeMemory(homeDir: string): Promise<ClaudeScanResul
   return { home: root, projects, totalImportable: projects.reduce((sum, p) => sum + p.importable, 0) }
 }
 
+/** 来源是否匹配某条 Claude 源文件(撤销判定的第一道门)。 */
+function sameOrigin(record: MemoryRecord, slug: string, file: string): boolean {
+  const origin = record.origin
+  return origin !== undefined && origin.kind === 'claude-code'
+    && origin.slug === slug && origin.file === file
+}
+
+/**
+ * 给 scan 结果补上逐条目标层状态(pending/imported/modified/legacy/conflict)。
+ * 只读,无副作用。查找范围:用户层 + 该项目 cwd 派生的项目层——allToUser
+ * 与冷目录导入都落在用户层,撤销必须两层都能找到,不能只查"自然目标层"。
+ */
+export async function annotateClaudeImport(store: MemoryStore, scan: ClaudeScanResult): Promise<ClaudeScanResult> {
+  const projects: ClaudeProjectScan[] = []
+  for (const project of scan.projects) {
+    const records = [
+      ...await store.list('user'),
+      ...(project.cwd !== null ? await store.list('project', project.cwd) : []),
+    ]
+    const files = project.files.map((file): ScannedFile => {
+      if (!file.ok || file.name === undefined) return file
+      // 来源匹配优先:即使同名占位存在,origin 能唯一定位"当年导的就是它"
+      const source = records.find(record => sameOrigin(record, project.slug, file.file))
+      if (source !== undefined) {
+        const untouched = source.origin?.hash === contentFingerprint(source)
+        return { ...file, state: untouched ? 'imported' : 'modified' }
+      }
+      const sameName = records.find(record => record.name === file.name)
+      if (sameName === undefined) return { ...file, state: 'pending' }
+      // 0.8.0 旧导入没有 origin:只有"无来源标记 + 内容与源逐字一致"才认作
+      // 可撤销的旧导入。宁可少删(落到 conflict 保留),也绝不删错本地记忆。
+      const legacy = sameName.origin === undefined && file.fingerprint !== undefined
+        && contentFingerprint(sameName) === file.fingerprint
+      return { ...file, state: legacy ? 'legacy' : 'conflict' }
+    })
+    projects.push({ ...project, files })
+  }
+  return { ...scan, projects }
+}
+
+/** 条目级目标(slug + 源文件名),导入与撤销共用。 */
+export interface ImportTarget {
+  slug: string
+  file: string
+}
+
+/** 撤销结果计数。 */
+export interface RevokeResult {
+  revoked: number
+  /** 目标源文件当前没有可撤销记录(已被手工删除/源已变)。 */
+  missing: number
+  /** 判定与删除之间内容被改(或扫描后改过):保留,不删。 */
+  modified: number
+  failed: number
+  details: Array<{ name: string; action: 'revoked' | 'missing' | 'modified' | 'failed' }>
+}
+
+/**
+ * 撤销导入:只删"来源匹配 + 内容指纹未变"的记忆(判定与删除在同一把
+ * store 锁内,store.deleteIf)。0.8.0 旧导入没有 origin,改用"无来源标记 +
+ * 同名 + 内容与源逐字一致"判定。导入后被编辑过的保留并计入 modified——
+ * 撤销绝不能抹掉后来的人工/模型编辑。
+ */
+export async function revokeClaudeImports(
+  store: MemoryStore,
+  scan: ClaudeScanResult,
+  targets: readonly ImportTarget[],
+): Promise<RevokeResult> {
+  const result: RevokeResult = { revoked: 0, missing: 0, modified: 0, failed: 0, details: [] }
+  const bySlug = new Map(scan.projects.map(project => [project.slug, project]))
+  for (const target of targets) {
+    const project = bySlug.get(target.slug)
+    if (project === undefined) {
+      result.missing += 1
+      result.details.push({ name: target.file, action: 'missing' })
+      continue
+    }
+    // 旧导入(无 origin)的撤销凭证:源内容指纹;仅 legacy 状态提供
+    const sourceFile = project.files.find(file => file.file === target.file)
+    const legacyName = sourceFile?.state === 'legacy' ? sourceFile.name : undefined
+    const legacyFingerprint = sourceFile?.state === 'legacy' ? sourceFile.fingerprint : undefined
+    const layers: Array<{ scope: MemoryScope, cwd?: string }> = [
+      { scope: 'user' },
+      ...(project.cwd !== null ? [{ scope: 'project' as const, cwd: project.cwd }] : []),
+    ]
+    let handled = false
+    for (const layer of layers) {
+      const records = await store.list(layer.scope, layer.cwd)
+      const matches = [
+        ...records.filter(record => sameOrigin(record, target.slug, target.file)),
+        ...(legacyName !== undefined && legacyFingerprint !== undefined
+          ? records.filter(record => record.name === legacyName && record.origin === undefined
+            && contentFingerprint(record) === legacyFingerprint)
+          : []),
+      ]
+      for (const record of matches) {
+        handled = true
+        const byOrigin = record.origin !== undefined
+        try {
+          const removed = await store.deleteIf(record.name, layer.scope, layer.cwd, current => byOrigin
+            ? sameOrigin(current, target.slug, target.file)
+              && current.origin?.hash === contentFingerprint(current)
+            // 旧导入:锁内再次确认"仍无来源且内容未变",否则保留
+            : current.origin === undefined && current.name === record.name
+              && legacyFingerprint !== undefined && contentFingerprint(current) === legacyFingerprint)
+          if (removed) {
+            result.revoked += 1
+            result.details.push({ name: record.name, action: 'revoked' })
+          } else {
+            result.modified += 1
+            result.details.push({ name: record.name, action: 'modified' })
+          }
+        } catch {
+          result.failed += 1
+          result.details.push({ name: record.name, action: 'failed' })
+        }
+      }
+    }
+    if (!handled) {
+      result.missing += 1
+      result.details.push({ name: target.file, action: 'missing' })
+    }
+  }
+  return result
+}
+
 /** 导入执行选项。 */
 export interface ImportOptions {
   /** 只导入这些 slug(缺省 = scan 结果全部)。 */
   slugs?: string[]
+  /** 条目级选择(slug+file);缺省 = 选中项目全部可导入文件。 */
+  files?: readonly ImportTarget[]
   /** true:全部导入用户层(忽略 cwd 反解);false:有 cwd 的进项目层。 */
   allToUser: boolean
 }
@@ -223,6 +386,11 @@ export async function runClaudeImport(store: MemoryStore, scan: ClaudeScanResult
   const selected = options.slugs !== undefined
     ? scan.projects.filter(p => options.slugs?.includes(p.slug))
     : scan.projects
+  const fileFilter = options.files !== undefined
+    ? new Set(options.files.map(target => `${target.slug}\u0000${target.file}`))
+    : undefined
+  // 同一批共享导入时间:origin.importedMs 是"这批什么时候进来的"的锚点
+  const importedMs = Date.now()
   const result: ImportResult = { imported: 0, skipped: 0, failed: 0, details: [] }
   for (const project of selected) {
     // 目标层:allToUser 或无法定位原路径 → 用户层;否则按 jsonl cwd 折叠项目层
@@ -231,6 +399,8 @@ export async function runClaudeImport(store: MemoryStore, scan: ClaudeScanResult
     const target = useProject ? 'project' as const : 'user' as const
     const existingNames = new Set((await store.list(target, targetCwd)).map(r => r.name))
     for (const file of project.files) {
+      // 条目级选择:未选中的文件直接跳过(项目级 slugs 过滤仍在外层生效)
+      if (fileFilter !== undefined && !fileFilter.has(`${project.slug}\u0000${file.file}`)) continue
       // 审查口径对齐:scan 已判不可解析的文件不属于 importable 口径,run 里
       // 静默跳过——failed 只统计"scan 认为可导入但 run 时读不到"的真 IO 错误
       if (!file.ok) continue
@@ -255,6 +425,8 @@ export async function runClaudeImport(store: MemoryStore, scan: ClaudeScanResult
         description: item.description,
         type: item.type,
         body: item.body,
+        // 导入溯源:撤销导入只认这条记录(store 会在清洗后算内容指纹)
+        origin: { kind: 'claude-code', slug: project.slug, file: file.file, importedMs },
         ...(item.modifiedMs !== undefined ? { createdMs: item.modifiedMs, updatedMs: item.modifiedMs } : {}),
         onlyIfAbsent: true,
       }, target, targetCwd)

@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   MemoryStore, INDEX_FILENAME, isStale, mergeLifecycleMeta, normalizeName, parseMemory, projectKey, serializeMemory, renderIndexBody,
-  redactSecrets, stripMemoryTags, memoryScore, descriptionSimilarity,
+  redactSecrets, stripMemoryTags, memoryScore, descriptionSimilarity, contentFingerprint,
 } from '../src/store.ts'
 import type { MemoryRecord } from '../src/types.ts'
 
@@ -466,5 +466,73 @@ describe('renderIndexBody(基础形态)', () => {
     ])
     expect(text).toBe('- [a](a.md) — A\n')
     expect(text).not.toContain('#')
+  })
+})
+
+describe('导入溯源 origin(0.10.0 撤销导入)', () => {
+  const ORIGIN = { kind: 'claude-code' as const, slug: 'D--src-proj', file: 'a.md', importedMs: 1_700_000_000_000 }
+
+  it('write 计算内容指纹;序列化→解析无损往返(含 origin 块)', async () => {
+    const written = await store.write({
+      name: 'imported-one', description: '导入记忆', type: 'user', body: '正文事实', origin: ORIGIN,
+    }, 'user')
+    expect(written?.origin?.hash).toMatch(/^[0-9a-f]{16}$/)
+    expect(written?.origin?.hash).toBe(contentFingerprint(written!))
+    const parsed = await store.read('imported-one', 'user')
+    expect(parsed?.origin).toEqual({ ...ORIGIN, hash: written?.origin?.hash })
+    const raw = await fsp.readFile(join(root, '_user', 'imported-one.md'), 'utf8')
+    expect(raw).toContain('kind: claude-code')
+    expect(raw).toContain('slug: D--src-proj')
+    expect(raw).toContain('imported: 1700000000000')
+  })
+
+  it('后续写入继承导入指纹:置顶/停用等元数据变更不重算、不丢来源', async () => {
+    const first = await store.write({
+      name: 'pinned-one', description: '导入记忆', type: 'user', body: '正文事实', origin: ORIGIN,
+    }, 'user')
+    const updated = await store.write({
+      name: 'pinned-one', description: '导入记忆', type: 'user', body: '正文事实', pinned: true,
+    }, 'user')
+    expect(updated?.origin).toEqual(first?.origin)
+    // 内容没变:指纹仍与当前内容一致 → 撤销判定为"未修改"
+    expect(updated?.origin?.hash).toBe(contentFingerprint(updated!))
+  })
+
+  it('内容更新保留 origin,但指纹对不上当前内容(撤销时按已修改保留)', async () => {
+    const first = await store.write({
+      name: 'edited-one', description: '导入记忆', type: 'user', body: '原始正文', origin: ORIGIN,
+    }, 'user')
+    const updated = await store.write({
+      name: 'edited-one', description: '导入记忆', type: 'user', body: '人工改写后的正文',
+    }, 'user')
+    expect(updated?.origin?.hash).toBe(first?.origin?.hash)
+    expect(contentFingerprint(updated!)).not.toBe(updated?.origin?.hash)
+  })
+
+  it('touch 保留 origin(读取计数不得抹掉溯源)', async () => {
+    await store.write({ name: 'read-one', description: '导入记忆', type: 'user', body: 'x', origin: ORIGIN }, 'user')
+    await store.touch('read-one', 'user')
+    const record = await store.read('read-one', 'user')
+    expect(record?.reads).toBe(1)
+    expect(record?.origin?.slug).toBe('D--src-proj')
+    expect(record?.origin?.hash).toBe(contentFingerprint(record!))
+  })
+
+  it('非法 origin 块按无来源解析(缺 hash / 未知 kind)', () => {
+    const withOrigin = (block: string): string => `---\nname: a\ndescription: d\norigin:\n${block}---\n\nbody`
+    expect(parseMemory(withOrigin('  kind: claude-code\n  slug: s\n  file: f.md\n  imported: 123\n'), 'user')?.origin).toBeUndefined()
+    expect(parseMemory(withOrigin('  kind: other\n  slug: s\n  file: f.md\n  imported: 123\n  hash: 0123456789abcdef\n'), 'user')?.origin).toBeUndefined()
+    // 合法对照:同样形态但字段齐全
+    expect(parseMemory(withOrigin('  kind: claude-code\n  slug: s\n  file: f.md\n  imported: 123\n  hash: 0123456789abcdef\n'), 'user')?.origin).toEqual({
+      kind: 'claude-code', slug: 's', file: 'f.md', importedMs: 123, hash: '0123456789abcdef',
+    })
+  })
+
+  it('deleteIf:predicate 不满足时保留,predicate 满足才删除并重建索引', async () => {
+    await store.write({ name: 'keep-me', description: 'd', type: 'user', body: 'x' }, 'user')
+    expect(await store.deleteIf('keep-me', 'user', undefined, record => record.name === 'other')).toBe(false)
+    expect(await store.read('keep-me', 'user')).not.toBeNull()
+    expect(await store.deleteIf('keep-me', 'user', undefined, record => record.name === 'keep-me')).toBe(true)
+    expect(await store.read('keep-me', 'user')).toBeNull()
   })
 })

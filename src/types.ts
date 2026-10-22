@@ -10,6 +10,24 @@ export type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
 /** 作用域:项目级(workspace 隔离)或用户级(所有会话共享)。 */
 export type MemoryScope = 'project' | 'user'
 
+/**
+ * 记忆来源(导入溯源):记录"这条记忆是从哪里导进来的"。
+ * 撤销导入时据此判断来源是否匹配;`hash` 是导入时的内容指纹,任何写入路径
+ * 都继承原值、绝不重算——指纹与当前内容不一致即"导入后被改过",撤销时保留。
+ */
+export interface MemoryOrigin {
+  /** 来源种类(目前只有 Claude Code 导入桥)。 */
+  kind: 'claude-code'
+  /** 源项目目录名(Claude 侧 `~/.claude/projects/<slug>`)。 */
+  slug: string
+  /** 源记忆文件名(含 .md)。 */
+  file: string
+  /** 首次导入时间(epoch ms)。 */
+  importedMs: number
+  /** 导入时的内容指纹(sha256 前 16 位);由 store 在清洗后计算。 */
+  hash: string
+}
+
 /** 一条持久记忆。与磁盘上单个 .md 文件一一对应。 */
 export interface MemoryRecord {
   /** kebab-case 标识,同时是文件名(不含扩展名)。 */
@@ -30,6 +48,8 @@ export interface MemoryRecord {
   disabled?: boolean
   /** 重要度 1-10(三因子排序用;固化时 LLM 显式打分,缺省按类型映射)。 */
   importance?: number
+  /** 导入溯源(缺省 = 非导入记忆);仅导入桥写入,撤销导入据此判定。 */
+  origin?: MemoryOrigin
   /** 生命周期元数据(P1 遗忘策略用;旧文件缺省时由解析层补全)。 */
   createdMs?: number
   updatedMs?: number
