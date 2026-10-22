@@ -7,3 +7,5 @@ dist/
 Thumbs.db
 .npmrc
 .internal-docs/
+.ref-ui.png
+measure.mjs
