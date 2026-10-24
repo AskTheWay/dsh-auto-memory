@@ -9,3 +9,4 @@ Thumbs.db
 .internal-docs/
 .ref-ui.png
 measure.mjs
+evals/datasets/longmemeval/

@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.1.0] - 2026-10-25
+
+### Added
+
+- **L2 end-to-end evaluation** (`evals/runners/l2-e2e.mjs`) — the layer above
+  the pipeline: full consolidation → injection → QA loop, each probe answered
+  twice (with memories / without) and blind-judged against gold facts.
+  Results: standard dataset **95.8% with vs 16.7% without — +79.2 points net
+  contribution**; abstention correct both ways. This is the first direct
+  evidence that the injected memories change model behavior, not just exist.
+- **LongMemEval-S alignment runner** (`evals/runners/l2-longmemeval.mjs`) —
+  the official benchmark protocol (ICLR 2025; cleaned data via hf-mirror,
+  5 official judge templates, stratified 30-question subset with fixed seed).
+  First run published honestly: 23.3% overall / 33.9% task-averaged /
+  100% abstention — with a root-cause analysis (chat-haystack needle-search
+  is outside this plugin's coding-scenario design; 4KB budget discipline
+  becomes the wrong discipline on a 122k-token chat sea). Quantifying the
+  boundary instead of cherry-picking benchmarks.
+- evals/README updated with the L2 methodology, results tables and honest
+  declarations (subset non-comparability, judge model difference).
+
 ## [1.0.0] - 2026-10-23
 
 ### Added
@@ -432,3 +453,4 @@ page (generated from this file at publish time).
 [0.9.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.9.0
 [0.10.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.10.0
 [1.0.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.0.0
+[1.1.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.1.0

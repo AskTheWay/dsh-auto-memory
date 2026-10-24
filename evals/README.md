@@ -12,7 +12,8 @@
 | **L0 确定性指标** | 注入预算曲线 / 信噪比 / 淘汰零误杀 / 链接展开边界 | 无(纯计算) | ✅ `l0/`,随 CI 跑 |
 | **L1 注入召回** | 合成数据集金标直写 → 逐 probe 注入可达性 | 无 API | ✅ `runners/l1-retrieval.mjs`(mini 与 standard 均 100%,完美固化上界) |
 | **L3 固化精度** | recall / precision / 污染率 / 更新正确率(真实 LLM 固化) | `DEEPSEEK_API_KEY`,≈会话数次调用 | ✅ `runners/l3-consolidation.mjs`(结果入 `results/`) |
-| L2 端到端 | 三模式 QA 对比 + 分阶段 token/耗时 | DSH + API key | 计划(可选) |
+| **L2 端到端** | 固化 → 注入 → 双组(带/无记忆)探针问答 → 盲判;lift = 记忆净贡献 | `DEEPSEEK_API_KEY`,≈探针数×3 次调用 | ✅ `runners/l2-e2e.mjs`(结果入 `results/`) |
+| **L2-LongMemEval** | 行业基准对齐:LongMemEval-S cleaned 子集(30 题分层抽样),官方 5 套 judge 模板 | `DEEPSEEK_API_KEY`,30 题≈1560 次调用 | ✅ `runners/l2-longmemeval.mjs`(结果入 `results/`) |
 
 **数据集**:`datasets/harness-sessions/`(`schema.md` 格式与质量红线;`mini` 手写 3 会话/12 题;`standard` 合成 10 会话/30 题含 6 拒答、4 ephemeral 陷阱、2 updated 推翻)。与 L0 的合成记忆构造器不同,这里的数据是**带金标标签的完整会话剧本**——coding-agent 语境(四类型记忆、双工作区、跨会话引用),LoCoMo/LongMemEval 均不覆盖。
 
@@ -63,11 +64,50 @@
 `[[name]]` 一层展开:上限 3 条并标记 truncated、自链排除、坏链接安全跳过、
 单次展开体积 ≤ 3×660 UTF-8 字节(有界性)。
 
+## L2 结果(2026-10-25,deepseek-chat)
+
+### 端到端双组对比(harness-sessions)
+
+| 数据集 | with 记忆 | baseline(无记忆) | **lift(净贡献)** | 拒答(with/without) |
+|---|---|---|---|---|
+| mini(3 会话/12 题) | 100% | 33.3% | **+66.7%** | 100% / 100% |
+| standard(10 会话/30 题) | 95.8% | 16.7% | **+79.2%** | 83.3% / 100% |
+
+baseline 的正确题几乎全是通用知识可蒙对的(psycopg2 常见坑/中文偏好);项目特定事实(压测预热/夜猫子时间/部署目标)无记忆时全错——lift 即记忆系统的净贡献。
+
+### LongMemEval-S 30 题分层抽样(接入官方协议的第一跑)
+
+Task-averaged **33.9%** / Overall **23.3%** / Abstention **100%**(分项:ss-user 1/1,multi-session 0/8,temporal 0/8,knowledge-update 1/5,ss-assistant 1/3,ss-pref 1/2)。
+
+**低分是实测发现而非事故**——根因与本插件的设计边界完全一致:
+
+1. **场景错配**:LongMemEval 是"122k token 闲聊海捞针"(每题 ~50 会话),本插件的固化管线为编码会话的 durable 事实设计,在闲聊海上产出 ~109 条低价值记忆/题,4KB 预算只放 top 30 行,目标事实被挤出注入——**预算纪律在错误场景下就是错的**;
+2. **证据碎片化**:答案事实散在多会话,每会话独立固化导致碎片化,无跨会话合并;
+3. judge=deepseek-chat(官方 gpt-4o-2024-08-06),与官方数字不可比。
+
+这组数字如实钉板:它量化了"轻量编码场景记忆"与"长程对话海捞针"两个任务的距离,是"不参与打榜"定位声明的实证注脚。Abstention 100%(对不可答问题全部正确拒答)与 harness-sessions 的 +79.2% lift 共同构成完整画像:**本插件在它的目标场景(编码会话)净贡献显著,在非目标场景(闲聊海)不假装能打**。
+
 ## 复现
 
 ```sh
 npm test          # L0 随全量测试运行(vitest 自动拾取 evals/l0/*.spec.ts)
+npm test && node evals/runners/l1-retrieval.mjs mini && node evals/runners/l1-retrieval.mjs standard
+DEEPSEEK_API_KEY=… node evals/runners/l3-consolidation.mjs mini
+DEEPSEEK_API_KEY=… node evals/runners/l2-e2e.mjs mini          # 端到端双组对比
+DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30
 ```
+
+LongMemEval 数据获取(官方域名被 DNS 污染,hf-mirror 为实测可靠通道;277MB,不入库):
+
+```sh
+curl -L -o evals/datasets/longmemeval/s_cleaned.json \
+  https://hf-mirror.com/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+```
+
+诚实声明:LongMemEval 子集为 30 题分层抽样(种子固定可复现,非官方全量 500);
+judge 为 deepseek-chat(官方默认 gpt-4o-2024-08-06)——分数与官方榜单数字不
+严格可比,定位是"同一 judge 下与自身 baseline 的对照"与"接入官方协议的
+方法论演示"。
 
 构造器(`helpers.ts` 的 seededRandom/makeMemories/seedStore)是未来
 L1/L3 合成数据集(harness-sessions:虚拟开发者多会话剧本)的地基。

@@ -153,6 +153,16 @@ no LLM, fully reproducible:
   compaction only compresses conversation history, so memories survive every
   compaction without re-injection tricks. Approaches that store memories as
   session-log messages lose theirs on the first compaction pass.
+- **End-to-end lift measured** (L2, the layer above the pipeline): with the
+  full consolidation → injection → QA loop, the model answers project-specific
+  probe questions at **95.8% with memories vs 16.7% without — a +79.2 point
+  net contribution** (standard dataset, 30 probes, blind LLM judge). An
+  honest off-target data point is published too: on LongMemEval-S (122k-token
+  chat-haystack needle-search, 30-question stratified subset, official judge
+  protocol) the plugin scores 23.3% overall — quantifying exactly how far
+  this coding-scenario design is from the chat-needle task, instead of
+  cherry-picking benchmarks. [Results](evals/results/) ·
+  [methodology](evals/README.md)
 - **Eviction never misfires**: four-class mixed scenario — only
   stale-zero-read memories get hidden; zero files lost; one read revives.
 - **Known limitation, pinned as baseline**: budget truncation is currently

@@ -1,0 +1,438 @@
+{
+  "dataset": "standard",
+  "model": "deepseek-chat",
+  "date": "2026-10-24T18:06:06.093Z",
+  "probes": {
+    "scored": 24,
+    "abstention": 6
+  },
+  "metrics": {
+    "e2eRecall": 95.8,
+    "baselineRecall": 16.7,
+    "lift": 79.2,
+    "abstentionWith": 83.3,
+    "abstentionWithout": 100
+  },
+  "rows": [
+    {
+      "q": "psycopg2 的坑?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "根据记忆，项目里明确记录过的一个 psycopg2 坑是：\n\n**连接必须用 context manager 归还**，否则容易触发 `PoolError`（连接池耗尽）。\n\n除此之外，记忆里没有更多 psycopg2 相关的具体坑记录，我不确定其他细节。"
+    },
+    {
+      "q": "psycopg2 的坑?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "psycopg2 常见坑:\n\n1. **连接未提交/回滚**:默认 autocommit=False,忘记 `conn.commit()` 数据不落库;异常后连接处于 aborted 状态,后续查询全报错,需 `rollback()`。\n2. **连接池缺失**:每次请求新建连接开销大,高并发易耗尽 `max_connections`,建议用 `psycopg2.pool` 或 SQLAlchem"
+    },
+    {
+      "q": "交流语言偏好?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "中文。"
+    },
+    {
+      "q": "交流语言偏好?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "correct",
+      "answer": "中文"
+    },
+    {
+      "q": "生产部署架构?",
+      "kind": "knowledge-update",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "生产部署采用**双机 + Nginx 负载均衡**架构（此前是单机 Compose，已改为该方案），上线时间为 10-20。"
+    },
+    {
+      "q": "生产部署架构?",
+      "kind": "knowledge-update",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "生产部署架构通常包括:负载均衡层(Nginx/LB)、应用服务层(多实例集群)、缓存层(Redis)、数据库层(主从/集群)、消息队列、对象存储、监控告警(Prometheus/Grafana)与日志系统(ELK),并通过容器化(Docker/K8s)实现弹性伸缩与高可用。"
+    },
+    {
+      "q": "idgen 用什么算法?回拨策略呢?",
+      "kind": "knowledge-update",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "根据记忆：\n\n- **算法**：雪花算法（Snowflake）。workerId 通过 Redis 自增分配，服务重启后不回收旧 ID；workerId 上限 1024 已确认足够。\n- **回拨策略**：已更新为**拒绝服务**——时钟回拨超过 5ms 直接报错，不再等待。\n\n（注：记忆里没有记录具体的位分配细节，如时间戳/序列号各占多少位，这部分我不知道。）"
+    },
+    {
+      "q": "idgen 用什么算法?回拨策略呢?",
+      "kind": "knowledge-update",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "idgen 通常指分布式 ID 生成器。常见算法:\n\n- **Snowflake(雪花算法)**:64 位 = 1 位符号 + 41 位时间戳 + 10 位机器 ID + 12 位序列号。趋势递增、高性能,依赖时钟。\n- **号段模式(segment)**:DB 批量取号段缓存本地发放,如美团 Leaf-segment。\n- **Redis INCR**:利用原子自增,需处理持久化与容量。\n- *"
+    },
+    {
+      "q": "压测采样注意什么?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "压测采样要注意：**压测前必须预热，前几秒冷启动的数据不计入统计**（丢弃冷启动噪声）。\n\n另外，按你的个人偏好，benchmark 脚本输出 **P99** 即可，不需要 P50。"
+    },
+    {
+      "q": "压测采样注意什么?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "压测采样需注意:\n1. 采样率要能反映真实流量分布,避免只采高峰或低谷。\n2. 保证采样随机性,避免偏差。\n3. 采样数据量要足够,满足统计显著性。\n4. 关注关键接口和异常请求,不能只采正常流量。\n5. 采样不能影响压测本身性能(低开销)。\n6. 记录采样时间窗口和上下文,便于复现分析。\n7. 敏感数据需脱敏。"
+    },
+    {
+      "q": "我的深度工作时段?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "根据记忆，你习惯**晚上十点后写代码**，白天上班期间不要打扰——所以深度工作时段是晚十点以后。"
+    },
+    {
+      "q": "我的深度工作时段?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我没有关于你过去会话的记忆，因此无法知道你的深度工作时段。请告诉我具体时间，我可以帮你分析或安排。"
+    },
+    {
+      "q": "新接口用什么框架?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "FastAPI。项目约定所有新接口统一用 FastAPI 编写。"
+    },
+    {
+      "q": "新接口用什么框架?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "Spring Boot"
+    },
+    {
+      "q": "性能问题先看哪?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "先看内部 Grafana 面板：https://obs.internal.example.com/grafana。"
+    },
+    {
+      "q": "性能问题先看哪?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "先看监控指标和火焰图，定位瓶颈在CPU、内存、IO还是网络。"
+    },
+    {
+      "q": "数据库迁移用什么工具?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "数据库迁移工具已确定使用 **Alembic**（团队已定，无需再讨论选型）。"
+    },
+    {
+      "q": "数据库迁移用什么工具?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "correct",
+      "answer": "数据库迁移常用工具包括 Flyway、Liquibase、Alembic(Python)、golang-migrate(Go)、Rails ActiveRecord Migrations(Ruby)、Knex(Node.js)等,具体选择取决于所用语言和框架。"
+    },
+    {
+      "q": "workerId 怎么分配?上限多少?",
+      "kind": "multi-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "根据记忆：\n\n- **分配方式**：workerId 通过 Redis 自增分配，服务重启后不回收旧 ID。\n- **上限**：1024，已确认足够，无需调整。\n\n（来源：`idgen-snowflake-decision`、`worker-id-upper-bound-1024`）"
+    },
+    {
+      "q": "workerId 怎么分配?上限多少?",
+      "kind": "multi-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "workerId 通常由 Snowflake 算法分配，常见方式有：\n\n1. **手动配置**：每个节点在配置文件中指定唯一 workerId。\n2. **自动分配**：通过 ZooKeeper/Redis/数据库等注册中心分配，节点启动时申请、下线时释放。\n3. **基于机器标识**：用 IP/MAC/主机名哈希生成。\n\n**上限**：取决于位宽。标准 Snowflake 中 workerId "
+    },
+    {
+      "q": "测试框架约定?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "团队约定测试框架统一使用 **pytest + pytest-asyncio**。"
+    },
+    {
+      "q": "测试框架约定?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "测试框架约定通常包括：测试文件命名（如 `test_*.py` 或 `*.test.js`）、测试函数/用例命名规范、目录结构（如 `tests/`）、断言方式、fixture/setup-teardown 机制、mock 使用方式，以及运行命令（如 `pytest`、`npm test`）。具体约定取决于所用框架（pytest、JUnit、Jest 等）和团队规范。"
+    },
+    {
+      "q": "为什么改 JWT?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "根据记忆，接口鉴权从 session 改为 JWT，原因是**后续要给小程序使用**（小程序端不方便维持传统 session）。"
+    },
+    {
+      "q": "为什么改 JWT?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "改 JWT 通常是为了解决安全性或扩展性问题，常见原因包括：\n\n1. **安全性**：旧方案可能存在漏洞（如算法混淆、密钥泄露、无法撤销令牌）。\n2. **无状态扩展**：JWT 便于水平扩展，减少服务端会话存储。\n3. **跨服务/跨域认证**：微服务或前后端分离场景下更易传递身份信息。\n4. **标准化**：统一令牌格式，便于多系统集成。\n5. **性能**：避免每次请求查库校验会话。\n\n具体"
+    },
+    {
+      "q": "生成 Python 代码时注意什么?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "生成 Python 代码时需要注意：**必须带完整类型标注**，不接受无类型代码。另外，代码注释使用中文。"
+    },
+    {
+      "q": "生成 Python 代码时注意什么?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "生成 Python 代码时注意:遵循 PEP 8 规范、使用清晰命名、添加必要注释、处理异常、避免硬编码、注意缩进一致、使用合适数据结构、考虑性能与可读性、做好输入验证。"
+    },
+    {
+      "q": "benchmark 看哪个分位?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "P99。"
+    },
+    {
+      "q": "benchmark 看哪个分位?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "correct",
+      "answer": "通常看 **P50（中位数）** 和 **P99（尾延迟）**；吞吐类看平均/总分，延迟类重点看 P99（有时也看 P95/P999）。"
+    },
+    {
+      "q": "日志库选型?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "日志库选型已定：统一用 **structlog**，不用 stdlib logging（见记忆「日志方案使用 structlog」）。"
+    },
+    {
+      "q": "日志库选型?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "correct",
+      "answer": "日志库选型需看语言和场景:\n\n- **Go**: zap(高性能、结构化)、zerolog(零分配)、slog(标准库,Go 1.21+)\n- **Java**: Logback + SLF4J(主流)、Log4j2(高性能异步)\n- **Python**: structlog(结构化)、loguru(易用)\n- **Rust**: tracing(异步生态)、log + env_logger\n-"
+    },
+    {
+      "q": "PG 读写怎么走?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "写操作走主库，读操作走从库（从库只读）。"
+    },
+    {
+      "q": "PG 读写怎么走?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "PG 读写流程:\n\n**读:** 客户端 → Postmaster 分配后端进程 → 查询解析/重写 → 计划器生成执行计划 → 执行器通过共享缓冲区(Buffer Cache)读取页面 → 命中则直接返回,未命中则从磁盘读入缓冲区 → 返回结果。\n\n**写:** 执行器修改缓冲区中的页面(标记脏页)→ 写 WAL 日志(先写日志,WAL 规则)→ 事务提交时 WAL 刷盘 → 后台进程(Chec"
+    },
+    {
+      "q": "我的 GitHub 用户名?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "AskTheWay"
+    },
+    {
+      "q": "我的 GitHub 用户名?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我不知道。"
+    },
+    {
+      "q": "CI 里 benchmark 何时算失败?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "abstain",
+      "answer": "我不知道。\n\n记忆里只有一条相关偏好：benchmark 脚本输出 P99 即可、不需要 P50（[[benchmark-p99-only]]），以及压测需预热、丢弃冷启动噪声（[[loadtest-warmup-discard-cold-start]]）。但这两条都没有说明 CI 中 benchmark 的失败判定标准（比如 P99 超过多少阈值算失败、是否允许回归百分比等）。这属于项目 CI "
+    },
+    {
+      "q": "CI 里 benchmark 何时算失败?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "CI 里 benchmark 失败通常指：性能回归超过预设阈值（如耗时/内存涨幅超 X%）、结果低于基线或绝对门槛、波动/噪声导致不显著、或 benchmark 无法运行/超时。具体以项目 CI 配置为准。"
+    },
+    {
+      "q": "JWT secret 多久换?",
+      "kind": "temporal",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "每 30 天轮换一次（运维规定，固定约束）。"
+    },
+    {
+      "q": "JWT secret 多久换?",
+      "kind": "temporal",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "没有固定标准，取决于安全需求：一般 3–6 个月轮换一次；高安全场景可 1 个月或更短；并支持双密钥平滑轮换，避免用户掉线。"
+    },
+    {
+      "q": "分页怎么写?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "按团队约定，接口分页统一用 **cursor 式**，不用 offset。\n\n大致写法（FastAPI + 全类型标注）：\n\n```python\nfrom typing import Any\nfrom fastapi import Query\n\n@app.get(\"/items\")\nasync def list_items(\n    cursor: str | None = Query(defau"
+    },
+    {
+      "q": "分页怎么写?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "分页写法取决于场景，常见几种：\n\n**1. 后端 SQL 分页（MySQL）**\n```sql\nSELECT * FROM table LIMIT offset, size;\n-- 第 n 页：LIMIT (n-1)*size, size\n```\n\n**2. 前端分页逻辑**\n```js\nconst pageSize = 10;\nconst currentPage = 1;\nconst start"
+    },
+    {
+      "q": "我最近在读什么书?关注哪些章节?",
+      "kind": "multi-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "你在读《Designing Data-Intensive Applications》(DDIA)，已看完第四章，对日志型存储（log-structured storage）感兴趣。"
+    },
+    {
+      "q": "我最近在读什么书?关注哪些章节?",
+      "kind": "multi-hop",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我无法知道你在读什么书或关注哪些章节，因为我没有过往会话的记忆，也无法访问你的阅读记录。"
+    },
+    {
+      "q": "idgen 的监控面板?",
+      "kind": "single-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "idgen 的 QPS 上报接入 Prometheus，对应 Grafana 面板 ID 是 **412**。"
+    },
+    {
+      "q": "idgen 的监控面板?",
+      "kind": "single-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "idgen 的监控面板通常指用于实时查看 ID 生成服务运行状态的界面,常见指标包括:\n\n- **QPS / TPS**:每秒生成 ID 数量\n- **发号延迟**:P50 / P95 / P99 耗时\n- **号段使用率**:当前号段消耗进度、剩余可用量\n- **时钟回拨告警**:Snowflake 类算法的时间回拨检测\n- **节点状态**:各 worker/实例在线情况、负载均衡\n- **错"
+    },
+    {
+      "q": "部署是哪天?(只答日期)",
+      "kind": "temporal",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "10-20"
+    },
+    {
+      "q": "部署是哪天?(只答日期)",
+      "kind": "temporal",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "无法确定"
+    },
+    {
+      "q": "池坑、预热、P99 三件事?",
+      "kind": "multi-hop",
+      "group": "with",
+      "verdict": "correct",
+      "answer": "根据记忆：\n\n- **池坑**：psycopg2 连接必须通过 context manager 归还，避免 PoolError（见「数据库连接必须用 context manager 归还」）。\n- **预热**：压测前必须预热，前几秒冷启动数据不计入统计（见「压测需预热并丢弃冷启动噪声」）。\n- **P99**：benchmark 脚本只输出 P99 即可，不需要 P50（见「基准测试只看 P99"
+    },
+    {
+      "q": "池坑、预热、P99 三件事?",
+      "kind": "multi-hop",
+      "group": "without",
+      "verdict": "wrong",
+      "answer": "池坑：连接池/对象池被打满或泄漏，导致请求排队。  \n预热：提前加载缓存、JIT、连接等，避免冷启动抖动。  \nP99：99% 请求的延迟上限，关注长尾延迟。"
+    },
+    {
+      "q": "我用 Rust 吗?",
+      "kind": "abstention",
+      "group": "with",
+      "verdict": "abstain",
+      "answer": "不知道。记忆里没有关于你是否使用 Rust 的信息。"
+    },
+    {
+      "q": "我用 Rust 吗?",
+      "kind": "abstention",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "不知道。我没有关于你过去使用什么编程语言的记忆。"
+    },
+    {
+      "q": "我的 PG 密码?",
+      "kind": "abstention",
+      "group": "with",
+      "verdict": "abstain",
+      "answer": "我不知道你的 PostgreSQL 密码。\n\n记忆里只有一些相关约束（比如生产 PG 主从架构、从库只读、连接要用 context manager 归还），但没有任何密码信息。密码这类敏感凭据也不应该存在记忆里，建议你查密码管理器或项目的密钥管理配置。"
+    },
+    {
+      "q": "我的 PG 密码?",
+      "kind": "abstention",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我无法知道你的 PostgreSQL 密码。密码不会保存在我的记忆中，每次会话都是独立的。请查看你的密码管理器、配置文件（如 `~/.pgpass`）或联系数据库管理员。"
+    },
+    {
+      "q": "api-server 的域名是什么?",
+      "kind": "abstention",
+      "group": "with",
+      "verdict": "abstain",
+      "answer": "我不知道。记忆里没有 api-server 域名的信息。"
+    },
+    {
+      "q": "api-server 的域名是什么?",
+      "kind": "abstention",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我不知道。"
+    },
+    {
+      "q": "DDIA 第几章没看?",
+      "kind": "abstention",
+      "group": "with",
+      "verdict": "wrong",
+      "answer": "根据记忆，你已看完第四章，所以**第四章之后的内容（第五章及以后）都还没看**。"
+    },
+    {
+      "q": "DDIA 第几章没看?",
+      "kind": "abstention",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我没有关于你阅读进度的信息，无法判断 DDIA 哪一章没看。"
+    },
+    {
+      "q": "我养猫吗?",
+      "kind": "abstention",
+      "group": "with",
+      "verdict": "abstain",
+      "answer": "我不知道。记忆里没有关于你是否养猫的信息。"
+    },
+    {
+      "q": "我养猫吗?",
+      "kind": "abstention",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我不知道。"
+    },
+    {
+      "q": "idgen 上线时间?",
+      "kind": "abstention",
+      "group": "with",
+      "verdict": "abstain",
+      "answer": "我不知道。\n\n记忆里没有 idgen 的上线时间。只有一条相关但不同的记录：生产部署方案改为双机 + Nginx 负载均衡，上线时间为 10-20（未明确是否指 idgen）。"
+    },
+    {
+      "q": "idgen 上线时间?",
+      "kind": "abstention",
+      "group": "without",
+      "verdict": "abstain",
+      "answer": "我没有关于 idgen 上线时间的信息。"
+    }
+  ]
+}
