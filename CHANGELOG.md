@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.2.0] - 2026-10-25
+
+### Added
+
+- **`memory_search` tool** — keyword search over names, descriptions and
+  *bodies* (the injection index only carries descriptions — this is how the
+  model reaches facts too large for the index). CJK-aware bigram matching via
+  the same matching core as consolidation; top-8 results with body excerpts,
+  progressive-disclosure style (search → read for full text).
+- **Claude import watcher** — the host now scans the Claude memory directory
+  every 5 minutes; when sync-able memories exist, the panel shows an
+  "N Claude Code memories ready to sync" hint bar above the list (count
+  rides the existing `groups.list` response — no new polling channel;
+  silent on failure, timer cleaned up with the plugin scope).
+- **Reverse export bridge** — a panel button renders *trusted* memories
+  (verified or unset; candidates/disputed never leave) as an AGENTS.md
+  snippet copied to the clipboard, so Claude Code / Codex / Cursor — any
+  AGENTS.md-convention tool — can consume what this plugin knows. The
+  reverse direction of the 0.8.0 import bridge.
+- Tests 182 → 188.
+
 ## [1.1.0] - 2026-10-25
 
 ### Added
@@ -454,3 +475,4 @@ page (generated from this file at publish time).
 [0.10.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v0.10.0
 [1.0.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.0.0
 [1.1.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.1.0
+[1.2.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.2.0

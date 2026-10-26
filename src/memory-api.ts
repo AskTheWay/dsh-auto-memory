@@ -23,6 +23,7 @@ import { descriptionSimilarity } from './matching.ts'
 import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
 import type { ImportTarget } from './import-claude.ts'
 import { readAudit, aggregateAudit } from './audit.ts'
+import { renderAgentsExport, trustedForExport } from './export-agents.ts'
 import { indexByteBudget } from './prompt.ts'
 import { homedir } from 'node:os'
 import type { MemoryEvidence, MemoryRecord, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
@@ -268,6 +269,26 @@ export function registerMemoryApi(
   const home = config.homeDir ?? homedir()
   const staleAfterDays = config.staleAfterDays ?? 0
 
+  // Claude 导入 watcher(1.2.0):低频(5 分钟)扫描 Claude 记忆目录的可同步
+  // 条数,groups.list 附带给面板做提示条——面板 polling 即可感知,不做推送。
+  // 扫描失败静默(claudePending 保持 -1 = 未知,面板不显示提示)。
+  let claudePending = -1
+  const refreshClaudePending = async (): Promise<void> => {
+    try {
+      claudePending = (await scanClaudeMemory(home)).totalImportable
+    } catch { /* 静默:watcher 绝不影响面板主路径 */ }
+  }
+  void refreshClaudePending()
+  const claudeTimer = setInterval(() => { void refreshClaudePending() }, 300_000)
+  if (typeof claudeTimer.unref === 'function') claudeTimer.unref()
+  // teardown 挂在框架 effect 上;测试假 ctx 无 effect——防御式跳过(进程退出
+  // 自然回收 timer,与"connection 机会式获取"同款静默纪律)
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(function* () {
+      yield async () => { clearInterval(claudeTimer) }
+    }, 'dsh-auto-memory claude import watcher')
+  }
+
   const json = (data: unknown, status = 200): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify(data), {
       status,
@@ -286,7 +307,8 @@ export function registerMemoryApi(
         }
       }
       // budgetBytes = 索引净预算(已扣写入指导/协议壳);面板用量条与注入同一口径
-      return json({ groups, maxBytes: config.maxBytes, budgetBytes: indexByteBudget(config.maxBytes) })
+      // claudeImportPending = watcher 的 Claude 可同步条数(-1 未知时不显示提示)
+      return json({ groups, maxBytes: config.maxBytes, budgetBytes: indexByteBudget(config.maxBytes), claudeImportPending: claudePending })
     },
   })
 
@@ -433,6 +455,25 @@ export function registerMemoryApi(
       // buildHealthReport(纯函数,tests/memory-api.spec.ts 覆盖)
       const all = await scanAllRecords(rootDir)
       return json(buildHealthReport(all))
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/export.agents`, methods: ['GET'], requestBody: 'buffered',
+    fetch: async (request) => {
+      // 反向导出桥(1.2.0):信任态记忆 → AGENTS.md 片段(纯文本,复制即用)。
+      // 只导信任态(status 缺省/verified)——candidate/disputed 不进指令文件
+      const cwd = new URL(request.url).searchParams.get('cwd') ?? undefined
+      const items: Array<{ name: string, description: string, scope: MemoryScope }> = []
+      for (const record of trustedForExport(await store.list('user'))) {
+        items.push({ name: record.name, description: record.description, scope: 'user' })
+      }
+      if (cwd !== undefined && cwd.length > 0) {
+        for (const record of trustedForExport(await store.list('project', cwd))) {
+          items.push({ name: record.name, description: record.description, scope: 'project' })
+        }
+      }
+      return json({ content: renderAgentsExport(items, new Date().toISOString().slice(0, 10)), count: items.length })
     },
   })
 

@@ -39,7 +39,7 @@ export const inject = ['slots', 'locale', 'sessions']
 
 /** 面板可用的操作面(宿主半路由的浏览器侧封装;组件永不直接拿 ctx)。 */
 export interface MemoryFace {
-  list: () => Promise<{ groups: unknown[]; maxBytes: number; budgetBytes?: number }>
+  list: () => Promise<{ groups: unknown[]; maxBytes: number; budgetBytes?: number; claudeImportPending?: number }>
   read: (query: { name: string; scope: string; cwd?: string }) => Promise<{ body: string; pinned: boolean; disabled: boolean }>
   write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean; status?: string }) => Promise<Response>
   del: (payload: { cwd?: string; scope: string; name: string }) => Promise<Response>
@@ -78,6 +78,8 @@ export interface MemoryFace {
     zombies: Array<{ name: string; scope: string; slug: string; ageDays: number }>
     conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
   }>
+  /** 1.2.0 反向导出桥:信任态记忆 → AGENTS.md 片段(纯文本)。 */
+  exportAgents: () => Promise<{ content: string; count: number }>
 }
 
 const BASE = '/api/auto-memory'
@@ -129,6 +131,11 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       const response = await fetch(`${BASE}/health.report`, { headers: { 'cache-control': 'no-store' } })
       if (!response.ok) throw new Error(`health.report HTTP ${String(response.status)}`)
       return (await response.json()) as ReturnType<MemoryFace['healthReport']>
+    },
+    exportAgents: async () => {
+      const response = await fetch(`${BASE}/export.agents`, { headers: { 'cache-control': 'no-store' } })
+      if (!response.ok) throw new Error(`export.agents HTTP ${String(response.status)}`)
+      return (await response.json()) as ReturnType<MemoryFace['exportAgents']>
     },
     currentCwd: () => currentCwd(ctx),
   }
@@ -370,6 +377,9 @@ export const PANEL_CSS = `
 .dam-health-row{display:flex;align-items:center;gap:8px;font-size:12px;padding:2px 0;min-width:0;}
 .dam-health-row code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
 .dam-health-meta{margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap;flex:none;}
+/* 导入提示条 + 导出成功提示(1.2.0) */
+.dam-import-hint{display:flex;align-items:center;gap:10px;justify-content:space-between;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary,#4d76e6) 40%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d76e6) 8%,transparent);border-radius:8px;padding:6px 12px;font-size:12.5px;}
+.dam-export-note{color:var(--dsw-alias-state-success-primary,#16a34a);font-size:12px;}
 .dam-badge--muted{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2);}
 `
 

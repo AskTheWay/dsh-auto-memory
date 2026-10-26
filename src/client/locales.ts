@@ -126,6 +126,11 @@ export const zh = {
   healthView: '定位',
   statusTipCandidate: '模型固化产物,未经验证——确认后可升级为「已验证」',
   statusTipDisputed: '命中注入防护或被你质疑——不注入,可恢复',
+  exportAction: '导出 AGENTS.md',
+  exportTip: '把信任态记忆(verified/无状态)导出为 AGENTS.md 片段并复制——任何吃 AGENTS.md 惯例的工具都能用',
+  exportDone: '已复制到剪贴板',
+  exportFailed: '导出失败',
+  importHint: 'Claude Code 有 {n} 条记忆可同步',
   scopeBoth: '用户层 + 项目层',
   scopeMissing: '不在当前索引',
 } as const
@@ -255,6 +260,11 @@ export const en: Record<PluginMemoryLocaleKey, string> = {
   healthView: 'locate',
   statusTipCandidate: 'Consolidated by the model, not yet verified — confirm to promote',
   statusTipDisputed: 'Flagged by injection guard or disputed by you — not injected, recoverable',
+  exportAction: 'Export AGENTS.md',
+  exportTip: 'Copy trusted memories (verified/unset) as an AGENTS.md snippet — any AGENTS.md-convention tool can use it',
+  exportDone: 'Copied to clipboard',
+  exportFailed: 'Export failed',
+  importHint: '{n} Claude Code memories ready to sync',
   scopeBoth: 'user + project layers',
   scopeMissing: 'not in the current index',
 }

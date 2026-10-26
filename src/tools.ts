@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { MemoryStore } from './store.ts'
 import { normalizeName, memoryScore, DEFAULT_IMPORTANCE } from './store.ts'
+import { descriptionCoverage } from './matching.ts'
 import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
 
@@ -240,6 +241,74 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
     },
     isConcurrencySafe: () => true,
     presentCall: () => ({ card: 'generic', title: 'Memory list', kind: 'other', rawInput: null }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_search',
+    description: 'Search persistent memories by keywords (CJK-aware; matches names, descriptions and bodies). Use when you need memories about a specific topic and the full list is large. Returns at most 8 best matches with a short body excerpt.',
+    parameters: {
+      query: { type: 'string', required: true, description: 'Keywords to search for (space-separated)' },
+      scope: { type: 'string', enum: ['project', 'user'], description: 'Limit to one scope; default searches both' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          matches: {
+            type: 'array', required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                description: { type: 'string', required: true },
+                type: { type: 'string', required: true },
+                scope: { type: 'string', required: true },
+                score: { type: 'number', required: true },
+                excerpt: { type: 'string', required: true },
+              },
+            },
+          },
+          query: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.matches.length === 0
+          ? `No memories match ${JSON.stringify(value.query)} — call memory_list to see all.`
+          : value.matches.map(m => `- ${m.name} (${m.scope}/${m.type}) — ${m.description}\n  excerpt: ${m.excerpt}`).join('\n'),
+      }],
+    },
+    async execute(args, exec) {
+      const cwd = exec.agent?.session.header.cwd
+      const query = String(args.query ?? '').trim()
+      if (query.length === 0) throw new Error('query must be a non-empty string')
+      const explicit = parseExplicitScope(args.scope)
+      const scopes: readonly MemoryScope[] = explicit !== undefined
+        ? [guardScope(explicit)]
+        : availableScopes()
+      const all = (await Promise.all(scopes.map(async scope =>
+        scope === 'project' ? await store.list(scope, requireCwd(cwd)) : await store.list(scope)))).flat()
+      // 有向词覆盖分(query 词集 ∩ 记忆文本词集 / query 词数):words() 内置
+      // CJK bigram,中文查询自动生效;body 参与匹配是 search 相对 list 的核心价值
+      const matches = all
+        .map(record => {
+          const haystack = `${record.name}\n${record.title ?? ''}\n${record.description}\n${record.body}`
+          const score = descriptionCoverage(query, haystack)
+          const hitIndex = record.body.toLowerCase().indexOf(query.toLowerCase().split(/\s+/)[0] ?? '')
+          const excerpt = hitIndex >= 0
+            ? record.body.slice(Math.max(0, hitIndex - 20), hitIndex + 100).replace(/\s+/g, ' ').trim()
+            : record.body.slice(0, 100).replace(/\s+/g, ' ').trim()
+          return { name: record.name, description: record.description, type: record.type, scope: record.scope, score, excerpt: excerpt.length > 0 ? excerpt : record.description }
+        })
+        .filter(m => m.score > 0)
+        .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+        .slice(0, 8)
+      return { matches, query }
+    },
+    isConcurrencySafe: () => true,
+    presentCall: () => ({ card: 'generic', title: 'Memory search', kind: 'other', rawInput: null }),
   }))
 
   ctx.tools.register(defineTool({

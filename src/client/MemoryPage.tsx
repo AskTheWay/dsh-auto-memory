@@ -434,7 +434,7 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
 }
 
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
-export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   /** 索引净预算(host 扣掉写入指导/协议壳后返回;旧宿主缺失时回退 maxBytes)。 */
@@ -459,6 +459,10 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const [stats, setStats] = useState<AuditStatsFace | null>(null)
   /** 记忆体检(1.0.0;旧宿主无路由时 null → 体检区不显示)。 */
   const [health, setHealth] = useState<HealthReportFace | null>(null)
+  /** Claude 可同步条数(watcher 透传;undefined = 旧宿主/未扫描,不显示提示)。 */
+  const [claudePending, setClaudePending] = useState<number | undefined>(undefined)
+  /** 导出 AGENTS.md 的成功提示(导出桥 1.2.0)。 */
+  const [exportNote, setExportNote] = useState<string | null>(null)
   /** 导入桥状态机:loading(扫描)→ select(勾选)→ applying → done。 */
   const [importer, setImporter] = useState<ImportState | null>(null)
   /** 扫描请求序号:弹层关闭即作废在途请求,迟到的响应不得复活弹层(审查修复)。 */
@@ -472,6 +476,8 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       setMaxBytes(data.maxBytes)
       // 与注入路径同一口径:净预算由宿主计算,旧宿主没有该字段时回退到 maxBytes
       setBudgetBytes(data.budgetBytes ?? data.maxBytes)
+      // Claude 可同步条数(watcher 透传;旧宿主无该字段 = undefined 不提示)
+      setClaudePending(data.claudeImportPending)
       setNow(Date.now())
     } catch {
       setError(true)
@@ -885,6 +891,19 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
           <p className="dam-intro">{t('intro')}</p>
         </div>
         <div className="dam-header-actions">
+          {/* 反向导出桥(1.2.0):信任态记忆 → AGENTS.md 片段,复制到剪贴板 */}
+          <button
+            type="button"
+            className="dam-btn dam-btn-ghost"
+            disabled={busy}
+            title={t('exportTip')}
+            onClick={() => {
+              void exportAgents()
+                .then(res => navigator.clipboard.writeText(res.content))
+                .then(() => { setActionError(null); setExportNote(t('exportDone')) })
+                .catch(() => { setExportNote(null); setActionError(t('exportFailed')) })
+            }}
+          >⬇ {t('exportAction')}</button>
           <button type="button" className="dam-btn dam-btn-ghost" onClick={() => { void load() }} disabled={busy}>
             <Icon name="refresh" /> {t('refresh')}
           </button>
@@ -919,6 +938,18 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
           </button>
         </div>
       </header>
+
+      {/* 导入提示条(watcher 透传:Claude 目录有可同步记忆且尚未打开过导入时) */}
+      {claudePending !== undefined && claudePending > 0 && importer === null && (
+        <div className="dam-import-hint">
+          <span>📥 {t('importHint', { n: claudePending })}</span>
+          <button type="button" className="dam-btn" onClick={() => {
+            const btn = document.querySelector<HTMLButtonElement>('.dam-header-actions .dam-btn-primary')
+            btn?.click()
+          }}>{t('healthView')}</button>
+        </div>
+      )}
+      {exportNote !== null && <div className="dam-export-note">✓ {exportNote}</div>}
 
       <div className="dam-overview">
         <span className="dam-stat"><b>{filtering ? `${String(visibleCount)} / ${String(total)}` : String(total)}</b> {t('overviewMemories')}</span>
