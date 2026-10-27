@@ -20,10 +20,7 @@ dsh plugin --profile demo add dsh-auto-memory
 今天对它说 *"记住:我是准备面试的 Python 后端工程师"*——
 明天开一个全新会话,问 *"你对我有什么了解?"*,它**记得**。
 
-整套系统在一个面板里:带可信徽章与证据链的类型化记忆、注入统计
-(哪些记忆生效了/按项目/预算截断了谁)、Claude Code 导入导出桥。
-
-![dsh-auto-memory 面板:注入统计/可信徽章/导入导出](imgs/image-2.png)
+![dsh-auto-memory——给 DeepSeek Harness 的持久记忆](imgs/img-1-zh.png)
 
 ---
 
@@ -74,7 +71,9 @@ node scripts/demo.mjs   # 不要 API key、不开浏览器:看 写入 → 索引
 
 整套记忆系统在 dsh Web UI 里只有一个入口:用户级/项目级分组、每条记忆的
 读取次数与可信徽章、置顶/停用/编辑/删除、注入统计(逐记忆+按项目+预算截断
-榜)、体检面板,以及 Claude Code 导入导出桥——见顶部截图。
+榜)、体检面板,以及 Claude Code 导入导出桥。
+
+![记忆面板:注入统计/可信徽章/导入导出](imgs/image-2.png)
 
 ## 从 Claude Code 导入,也能撤销
 
@@ -88,6 +87,16 @@ ISO `modified` → 时间戳),同名记忆跳过、绝不覆盖。
 编辑过的记忆,内容指纹对不上,会标成**已修改**并保留,绝不会被静默丢掉。
 旧版本(0.8.0/0.9.x)导入、没有 `origin` 标记的记忆按内容完全一致识别为
 **旧版导入**,同样可以取消勾选撤销。
+
+甚至不用自己盯着:宿主每 5 分钟扫描一次 Claude 记忆目录,只要有可同步的
+记忆,列表上方就会出现提示条。
+
+### 导出到 AGENTS.md——桥是双向的
+
+面板一键把**信任态**记忆(verified/未设置——candidate 和有争议的绝不外流)
+渲染成 **AGENTS.md** 片段并复制到剪贴板。粘进任何遵循 AGENTS.md 惯例的
+工具——Claude Code、Codex、Cursor——这个插件学到的东西就跟着你走。
+同样的扁平文件,两个方向。
 
 ## 模型实际看到什么
 
@@ -193,7 +202,9 @@ dsh --profile demo                               # 重启 profile 生效
 - **注入**:单个动态段,每步组装重新求值;同步读索引、执行字节预算、中和 `{{`。
   工具写入在**下一个请求**即生效——永远不需要重启。
 - **审计**:不写自定义会话事件(第三方事件类型会让 dsh 拒绝 resume);
-  一切走标准 `tool/call` / `tool/result`。
+  一切走标准 `tool/call` / `tool/result`。1.0 起每次注入还会落
+  `audit.jsonl`(哪些记忆/哪个会话/预算截了谁)并聚合进面板统计——
+  记忆带纸质轨迹。
 
 深度内容:[设计决策](docs/design.md) ·
 [复盘:向 awesome-dsh-plugin 提 PR](docs/postmortem-pr-5696.md)

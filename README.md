@@ -21,11 +21,7 @@ Say *"Remember: I'm a Python backend engineer preparing for interviews"* today �
 open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 **remembers**.
 
-The whole system surfaces in one panel: typed memories with trust badges and
-evidence, injection statistics (which memories fired, per project, what got
-budget-truncated), and the Claude Code import/export bridges.
-
-![dsh-auto-memory panel: injection stats, trust badges, import/export](imgs/image-2.png)
+![dsh-auto-memory — persistent memory for DeepSeek Harness](imgs/img-1.png)
 
 ---
 
@@ -93,7 +89,9 @@ The whole memory system has one home in the dsh Web UI: user-scope and
 project-scope groups, per-memory read counts and trust badges, pin / disable /
 edit / delete, injection statistics (per memory and per project, with budget
 truncation boards), the health board, and the Claude Code import/export
-bridges — see the screenshot at the top.
+bridges.
+
+![The memory panel: injection stats, trust badges, import/export](imgs/image-2.png)
 
 ## Import from Claude Code — and take it back
 
@@ -111,6 +109,18 @@ memory was edited after import, the content fingerprint no longer matches; the
 entry is marked **modified** and kept, never silently discarded. Memories
 imported by earlier versions (no `origin` block) are recognised by exact content
 equality and marked **legacy import**, so they can be revoked the same way.
+
+You don't even have to check: the host scans the Claude memory directory every
+5 minutes, and a hint bar appears above the list whenever sync-able memories
+are waiting.
+
+### Export to AGENTS.md — the bridge goes both ways
+
+A panel button renders your *trusted* memories (verified or unset — candidates
+and disputed never leave) as an **AGENTS.md** snippet copied to the clipboard.
+Paste it into any tool that follows the AGENTS.md convention — Claude Code,
+Codex, Cursor — and what this plugin learned travels with you. Same flat
+files, two directions.
 
 ## What the model actually sees
 
@@ -235,6 +245,9 @@ Override in your profile's `cordis.patch.yml` (config replaces wholesale):
   Tool writes take effect on the **very next request** — no restart, ever.
 - **Audit**: no custom session events (third-party types make dsh refuse to
   resume); everything flows through standard `tool/call` / `tool/result`.
+  Since 1.0, every injection is also logged to `audit.jsonl` (which memories,
+  which session, what the budget cut) and aggregated into the panel's
+  statistics — memory with a paper trail.
 
 Deep dives: [design decisions](docs/design.md) ·
 [postmortem: shipping a PR to awesome-dsh-plugin](docs/postmortem-pr-5696.md)
