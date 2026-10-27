@@ -21,16 +21,23 @@ Say *"Remember: I'm a Python backend engineer preparing for interviews"* today �
 open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 **remembers**.
 
-![Memory management panel in the dsh Web UI](imgs/img-1.png)
+The whole system surfaces in one panel: typed memories with trust badges and
+evidence, injection statistics (which memories fired, per project, what got
+budget-truncated), and the Claude Code import/export bridges.
+
+![dsh-auto-memory panel: injection stats, trust badges, import/export](imgs/image-2.png)
 
 ---
 
 ## Highlights
 
-**0.7 — update-replace semantics**: consolidation updates facts in place
-instead of piling up near-duplicates, with a matching core shared between
-product and eval harness. Verified against the official desktop client
-(0.2.0-rc.2). Full history: [CHANGELOG.md](CHANGELOG.md) ·
+**1.x — trustworthy memory + measured end-to-end**: consolidation products are
+born `candidate` with verbatim evidence quotes; only *you* can grant
+`verified`; disputed memories are never re-injected; every write passes an
+injection-pattern guard at the store choke point. And it's measured: four
+evaluation layers (deterministic / recall / consolidation / end-to-end) plus a
+LongMemEval-S alignment run — including an honestly published off-target score.
+Full history: [CHANGELOG.md](CHANGELOG.md) ·
 [Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 
 ## Claude Code has this. dsh didn't. Now it does.
@@ -75,10 +82,18 @@ node scripts/demo.mjs   # no API key, no browser: watch write → index → inje
 ```
 
 Or for real, in a chat: tell your agent things worth remembering. The model
-calls `memory_write` / `memory_read` / `memory_list` / `memory_delete`,
-following Claude Code's write discipline: **dedupe-and-update over piling up**,
-absolute dates only, `[[name]]` cross-links, `feedback` memories carry
-**Why:** / **How to apply:** lines.
+calls `memory_write` / `memory_read` / `memory_list` / `memory_search` /
+`memory_delete`, following Claude Code's write discipline: **dedupe-and-update
+over piling up**, absolute dates only, `[[name]]` cross-links, `feedback`
+memories carry **Why:** / **How to apply:** lines.
+
+## The memory panel
+
+The whole memory system has one home in the dsh Web UI: user-scope and
+project-scope groups, per-memory read counts and trust badges, pin / disable /
+edit / delete, injection statistics (per memory and per project, with budget
+truncation boards), the health board, and the Claude Code import/export
+bridges — see the screenshot at the top.
 
 ## Import from Claude Code — and take it back
 
@@ -181,7 +196,7 @@ exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).
 | dsh version | 0.1.5-rc.2 | 0.2.0-rc.2 | 0.2.1-rc.2 |
 | status | ✓ tools/prompt/consolidation | ✓ panel + import + audit | ✓ panel + import |
 
-**182 tests + three eval layers (L0 deterministic / L1 recall / L3 consolidation). 0 runtime deps beyond `yaml`, ~35 kB installed.**
+**188 tests + four evaluation layers (L0 deterministic / L1 recall / L3 consolidation / L2 end-to-end + LongMemEval alignment). 0 runtime deps beyond `yaml`, ~35 kB installed.**
 
 ## Install
 
@@ -230,7 +245,9 @@ Deep dives: [design decisions](docs/design.md) ·
 - [x] P1 — auto-consolidation on session end, forgetting & eviction, recall expansion, human-gated bulk delete
 - [x] P2 — Web UI memory panel, token-cost / recall-quality benchmarks
 - [x] P3 — update-replace semantics, matching core shared with the eval harness
-- [ ] Injection audit log ([#11](https://github.com/AskTheWay/dsh-auto-memory/issues/11)), L2 end-to-end eval
+- [x] 0.8–1.0 — Claude Code import bridge (revocable), injection audit + stats, trustworthy memory (status / evidence / guard / health)
+- [x] 1.1–1.2 — L2 end-to-end + LongMemEval alignment, `memory_search`, import watcher, reverse AGENTS.md export
+- [ ] L2 refinements (relevance-ranked truncation), community-driven work
 
 ## Changelog
 

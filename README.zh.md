@@ -20,14 +20,19 @@ dsh plugin --profile demo add dsh-auto-memory
 今天对它说 *"记住:我是准备面试的 Python 后端工程师"*——
 明天开一个全新会话,问 *"你对我有什么了解?"*,它**记得**。
 
-![dsh Web UI 中的记忆管理面板](imgs/img-1-zh.png)
+整套系统在一个面板里:带可信徽章与证据链的类型化记忆、注入统计
+(哪些记忆生效了/按项目/预算截断了谁)、Claude Code 导入导出桥。
+
+![dsh-auto-memory 面板:注入统计/可信徽章/导入导出](imgs/image-2.png)
 
 ---
 
 ## 亮点
 
-**0.7——更新替换语义**:固化命中同一事实即原地更新,不再堆积近似重复;
-匹配核心由产品与评测共用。已实测官方桌面端(0.2.0-rc.2)。
+**1.x——可信记忆 + 端到端实测**:固化产物出生即 `candidate` 并附逐字证据
+摘录;`verified` 只能由**你**授予;有争议的记忆永不重新注入;所有写入路径
+在存储单点过注入模式守卫。而且测了:四层评测(确定性/召回/固化/端到端)+
+LongMemEval-S 对齐跑——包括一个如实公布的非目标场景分数。
 完整历史:[CHANGELOG.md](CHANGELOG.md) ·
 [Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 
@@ -60,9 +65,16 @@ node scripts/demo.mjs   # 不要 API key、不开浏览器:看 写入 → 索引
 ```
 
 或者在真实对话里:告诉智能体值得记住的事。模型调用
-`memory_write` / `memory_read` / `memory_list` / `memory_delete`,
-遵循 Claude Code 的写入纪律:**查重更新而非堆积**、只用绝对日期、
-`[[name]]` 交叉链接、`feedback` 记忆附 **Why:** / **How to apply:** 行。
+`memory_write` / `memory_read` / `memory_list` / `memory_search` /
+`memory_delete`,遵循 Claude Code 的写入纪律:**查重更新而非堆积**、
+只用绝对日期、`[[name]]` 交叉链接、`feedback` 记忆附 **Why:** /
+**How to apply:** 行。
+
+## 记忆面板
+
+整套记忆系统在 dsh Web UI 里只有一个入口:用户级/项目级分组、每条记忆的
+读取次数与可信徽章、置顶/停用/编辑/删除、注入统计(逐记忆+按项目+预算截断
+榜)、体检面板,以及 Claude Code 导入导出桥——见顶部截图。
 
 ## 从 Claude Code 导入,也能撤销
 
@@ -145,7 +157,7 @@ ISO `modified` → 时间戳),同名记忆跳过、绝不覆盖。
 | dsh 版本 | 0.1.5-rc.2 | 0.2.0-rc.2 | 0.2.1-rc.2 |
 | 状态 | ✓ 工具/注入/固化 | ✓ 面板 + 导入 + 审计 | ✓ 面板 + 导入 |
 
-**182 项测试 + 三层评测(L0 确定性/L1 召回/L3 固化质量)。运行时依赖仅 `yaml`。**
+**188 项测试 + 四层评测(L0 确定性/L1 召回/L3 固化质量/L2 端到端 + LongMemEval 对齐)。运行时依赖仅 `yaml`。**
 
 ## 安装
 
@@ -192,7 +204,9 @@ dsh --profile demo                               # 重启 profile 生效
 - [x] P1——会话结束自动固化、遗忘与淘汰、召回展开、人工审批的批量删除
 - [x] P2——Web UI 记忆面板、token 成本/召回质量评测
 - [x] P3——更新替换语义、匹配核心与评测共用
-- [ ] 注入审计日志([#11](https://github.com/AskTheWay/dsh-auto-memory/issues/11))、L2 端到端评测
+- [x] 0.8–1.0——Claude Code 导入桥(可撤销)、注入审计+统计、可信记忆(状态/证据/守卫/体检)
+- [x] 1.1–1.2——L2 端到端 + LongMemEval 对齐、memory_search、导入 watcher、反向 AGENTS.md 导出
+- [ ] L2 精修(相关性排序截断)、社区反馈驱动
 
 ## 更新日志
 
