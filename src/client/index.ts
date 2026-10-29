@@ -41,7 +41,7 @@ export const inject = ['slots', 'locale', 'sessions']
 export interface MemoryFace {
   list: () => Promise<{ groups: unknown[]; maxBytes: number; budgetBytes?: number; claudeImportPending?: number }>
   read: (query: { name: string; scope: string; cwd?: string }) => Promise<{ body: string; pinned: boolean; disabled: boolean }>
-  write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean; status?: string }) => Promise<Response>
+  write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean; status?: string; supersedes?: string }) => Promise<Response>
   del: (payload: { cwd?: string; scope: string; name: string }) => Promise<Response>
   /** 当前会话工作区的 cwd(项目组操作的定位键;无会话时 undefined)。 */
   currentCwd: () => string | undefined
@@ -380,6 +380,11 @@ export const PANEL_CSS = `
 /* 导入提示条 + 导出成功提示(1.2.0) */
 .dam-import-hint{display:flex;align-items:center;gap:10px;justify-content:space-between;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary,#4d76e6) 40%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4d76e6) 8%,transparent);border-radius:8px;padding:6px 12px;font-size:12.5px;}
 .dam-export-note{color:var(--dsw-alias-state-success-primary,#16a34a);font-size:12px;}
+/* #19 谱系:可点徽章与跳转命中高亮 */
+.dam-lineage-link{cursor:pointer;text-decoration:underline dotted;}
+.dam-lineage-link:hover{color:var(--dsw-alias-brand-primary,#4d76e6);}
+@keyframes dam-lineage-flash{0%{box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary,#4d76e6) 60%,transparent);}100%{box-shadow:0 0 0 3px transparent;}}
+.dam-lineage-hit{animation:dam-lineage-flash 1.5s ease-out;border-radius:8px;}
 .dam-badge--muted{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2);}
 `
 

@@ -69,6 +69,10 @@ export interface MemoryRecord {
   status?: MemoryStatus
   /** 证据链(固化时生成;候选验证状态的用户依据)。 */
   evidence?: MemoryEvidence
+  /** #19 演化谱系:本条(旧)被哪条记忆取代(值=新记忆 name;仅 status='superseded' 有意义)。 */
+  supersededBy?: string
+  /** #19 演化谱系:本条(新)取代了哪条旧记忆(值=旧记忆 name;固化矛盾检测写入)。 */
+  supersedes?: string
   /** 导入溯源(缺省 = 非导入记忆);仅导入桥写入,撤销导入据此判定。 */
   origin?: MemoryOrigin
   /** 生命周期元数据(P1 遗忘策略用;旧文件缺省时由解析层补全)。 */

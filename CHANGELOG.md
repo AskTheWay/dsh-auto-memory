@@ -6,6 +6,55 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.3.0] - 2026-10-30
+
+### Added
+
+- **Consolidation value filter** (#17): a configurable `minImportance` gate
+  (default 4) drops low-value candidates before they hit disk, and a
+  **chitchat suppressor** intercepts pure pleasantries — strong-greeting
+  signal AND no substantive content after stripping the greeting. The CJK
+  side deliberately uses a length gate instead of a closed word list: the
+  adversarial review measured a 45% false-positive rate on the first
+  word-list cut (function/thread/memory/exception were all missing; 3-char
+  entries never match the bigram tokenizer; unpunctuated CJK+Latin runs
+  glue into single tokens) — the redesign intercepts only true
+  pleasantries (≤5 CJK chars after stripping, no Latin tokens), at the
+  cost of letting short-but-real sentences through (miss over false
+  positive, per the DIRECTIVE_PATTERNS 40%-FP lesson).
+- **Relevance-ranked truncation** (#18) — the last "known limitation" from
+  the README is gone. When the injection budget overflows, memory rows are
+  scored by query-term coverage (the frozen per-session query built from
+  the latest real user turns) and the most relevant survive; pinned rows
+  still lead. Direction fixed per adversarial review (query as gold —
+  the first cut had it backwards, letting an off-topic one-word row beat
+  a precise 30-word row). The query is frozen per session (first non-empty
+  set) so KV-prefix stability holds — asserted by tests; user captures
+  now run even when `autoSummarize` is off, since the injection side
+  needs them.
+- **Memory evolution** (#19): when a consolidation candidate matches an
+  existing memory AND carries a hard contradiction (date sets disjoint,
+  or same-unit numbers differ), the update no longer overwrites — the old
+  memory becomes `superseded` with a `supersededBy` back-pointer and the
+  new one lands under a `-v2` name with a `supersedes` forward-pointer
+  (both capped to the 64-char name limit). `memory_read` of a superseded
+  memory carries a banner telling the model to read the successor;
+  the panel renders clickable lineage badges with scroll-and-flash jump.
+  Superseded files can never be revived by consolidation (store-level
+  guard); restoring from the panel clears both sides of the chain.
+- Tests 188 → 202; L2 (+77.8% lift) and L3 (recall 100%) re-run to
+  confirm no regression.
+
+### Fixed
+
+- Hardened by an adversarial review (17 agents, ~950k tokens, every
+  finding reproduced): chitchat false-positive redesign (above);
+  relevance direction inversion (above); same-name candidates could
+  revive superseded files through the create path; `-v2` suffixes could
+  exceed the 64-char name cap creating ghost files; lineage jump could
+  navigate to the wrong card on name-suffix collisions; restore left a
+  dangling `supersedes` badge; duplicate per-candidate match computation.
+
 ## [1.2.0] - 2026-10-25
 
 ### Added
@@ -476,3 +525,4 @@ page (generated from this file at publish time).
 [1.0.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.0.0
 [1.1.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.1.0
 [1.2.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.2.0
+[1.3.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.3.0

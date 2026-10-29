@@ -27,8 +27,8 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MemoryStore } from './store.ts'
-import { normalizeName, asMemoryType } from './store.ts'
-import { decideConsolidationAction } from './matching.ts'
+import { normalizeName, asMemoryType, DEFAULT_IMPORTANCE } from './store.ts'
+import { decideConsolidationAction, detectContradictions, words } from './matching.ts'
 import { collectInstructionDigest } from './instructions.ts'
 import type { MemoryEvidence, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
 
@@ -60,6 +60,8 @@ export interface ConsolidationOptions {
   autoSummarizeMaxMemories: number
   autoSummarizeMaxTokens: number
   enableUserScope: boolean
+  /** #17 候选有效分(importance ?? DEFAULT_IMPORTANCE[type])低于此值丢弃;0 禁用。 */
+  minImportance: number
 }
 
 /** 一条固化候选(LLM 输出的一个元素,sanitize 前)。 */
@@ -139,6 +141,37 @@ export function parseCandidates(raw: string): RawCandidate[] | null {
 // 审查确认只挂固化会被绕过);此处转出口保持固化路径调用方与测试兼容。
 import { detectDirectivePattern } from './store.ts'
 export { detectDirectivePattern }
+
+/**
+ * 闲聊抑制(#17):候选正文是否为纯寒暄——强问候信号命中且剥掉问候后无实质内容。
+ * 纪律(对齐 DIRECTIVE_PATTERNS 的 40% 误报教训;对抗审查实测首版中文误报 45% 后重设计):
+ * - 强问候信号 = 句首问候(无 ——JS  对 CJK 是死分支)或句中感谢/道别/裸应答;
+ * - 实质内容判定分语言:拉丁侧任何 >=3 字符 token;CJK 侧不依赖闭集词表
+ *   (审查实测:两字词闭集对 函数/异常/线程/内存 大量漏列、3 字词条对 bigram
+ *   分词器是死代码、无标点中英混排 glue 成混合 token 全漏)——改为长度门槛:
+ *   剥掉句首问候与句尾客套后,剩余 CJK 字符 >=6 即有实质(自我介绍/偏好/
+ *   技术问句天然过线;只有真·纯寒暄被拦,宁漏勿误)。
+ */
+const GREETING_PATTERNS: RegExp[] = [
+  /^(?:你好|您好|hi|hello|hey|早上好|晚上好|下午好)/i,
+  /(?:谢谢|感谢|thanks|thank you|多谢|再见|晚安|回头见|bye)/i,
+  /^(?:好的|嗯+|哦+|ok|okay|got it|明白|收到)[。.!!~s]*$/i,
+]
+
+/** 纯函数:候选正文是否命中闲聊抑制(强问候 AND 剥问候后无实质内容)。 */
+export function isChitchat(text: string): boolean {
+  const greeting = GREETING_PATTERNS.some(pattern => pattern.test(text))
+  if (!greeting) return false
+  const stripped = text
+    .replace(/^(?:你好|您好|hi|hello|hey|早上好|晚上好|下午好)[,，!！。~s]*/i, '')
+    .replace(/(?:谢谢|感谢|多谢|辛苦了|再见|晚安|回头见)(啦|了|呢)?[。.!!~s]*$/g, '')
+    .replace(/(?:thanks|thank[s!]you|bye|hello|hi|got it|ok)[!.~s]*/gi, '')
+    .trim()
+  if (/[a-z][a-z0-9-]{2,}/i.test(stripped)) return false
+  const cjkCount = (stripped.match(/[一-鿿]/g) ?? []).length
+  if (cjkCount >= 6) return false
+  return true
+}
 
 /**
  * sanitize 单条候选:字段类型校验、name 归一化(不可归一化即丢弃)、
@@ -247,10 +280,24 @@ interface SessionCapture {
 }
 
 /** 挂载自动固化监听(autoSummarize=false 时 no-op)。 */
-export function registerConsolidation(ctx: Context, store: MemoryStore, options: ConsolidationOptions): void {
-  if (!options.autoSummarize) return
+/**
+ * 挂载自动固化监听(autoSummarize=false 时 no-op)。
+ * 返回会话通道供注入侧使用(#18 相关性截断):getQueryText 取该会话最近的
+ * 真实 USER 文本(词集原料),flush 等在途固化落盘。
+ */
+export interface ConsolidationHandle {
+  /** 最近 N 条真实 USER 输入拼接(无缓冲/未捕获 → undefined;截断防词集膨胀)。 */
+  getQueryText: (sessionId: string) => string | undefined
+  /** 等待在途固化落盘(测试用)。 */
+  flush: () => Promise<void>
+  /** 会话清理钩子(注入侧同会话清冻结词集时一并调)。 */
+  cleanup: (sessionId: string) => void
+}
 
+export function registerConsolidation(ctx: Context, store: MemoryStore, options: ConsolidationOptions): ConsolidationHandle {
   const captures = new Map<string, SessionCapture>()
+  // autoSummarize=false 时无固化,但仍保留 USER 捕获(#18 相关性截断的词集源,
+  // 与固化开关解耦——注入侧的相关性不应依赖后台总结是否开启)
   const active = new Set<Promise<void>>()
   // teardown 时中止在途 LLM 调用(否则排空只能干等截断输出;审查 minor 修复)
   const abort = new AbortController()
@@ -267,6 +314,7 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
       cap.lines = appendCapped(cap.lines, `USER: ${text}`)
       captures.set(session.id, cap)
     } else if (event.type === 'assistant/message') {
+      if (!options.autoSummarize) return // 固化关:只留 USER 捕获(词集),ASSISTANT 不需要
       const text = captureText('assistant', event.data.message as { content: unknown })
       if (text === null) return
       const cap = captures.get(session.id) ?? { cwd: session.header.cwd, lines: [] }
@@ -279,6 +327,9 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
   ctx.on('agent/disposed', ({ agent }) => {
     const cap = captures.get(agent.session.id)
     if (cap === undefined) return
+    // 固化关:autoSummarize 分支整体跳过,但缓冲保留到 session/disposed
+    // (#18 词集源生命周期与固化解耦,不能在此取走)
+    if (!options.autoSummarize) return
     // 无论是否固化都取走缓冲:subagent 的捕获也会在此清理,否则常驻进程
     // 的 captures Map 随子代理会话无界增长(审查 major 修复)
     captures.delete(agent.session.id)
@@ -350,8 +401,62 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           // 同一性判定(0.7.0 更新替换语义):name 锚定/精确同名/描述复述 → 更新
           // 现有记忆(复用其 name/scope 与生命周期,覆写内容)而非跳过或并存;
           // 无匹配 → 新建。L3 暴露的两 bug(新旧并存、同义重复)由此闭环。
+          // #17 价值门槛:update 命中豁免(echo 复述刷新 recency 锚,拦掉会
+          // 加速既有记忆衰减);create 才按有效分/闲聊过滤——判定复用同一
+          // decision(审查 minor:每候选重复跑两次 decideConsolidationAction)
           const decision = decideConsolidationAction(candidate, existingAll)
+          if (decision.action === 'create') {
+            const effectiveImportance = candidate.importance ?? DEFAULT_IMPORTANCE[candidate.type]
+            if (effectiveImportance < options.minImportance) continue
+            if (isChitchat(candidate.body)) continue
+          }
           if (decision.action === 'update') {
+            // #19 矛盾检测(演化谱系):强信号(日期/数值)命中 → 两步写——
+            // 新记忆以新 name 先落盘(带 supersedes 指针),旧记忆转
+            // superseded(带 supersededBy 回链)。次序不可反:旧先隐藏而新写
+            // 失败 = 该事实从注入中消失;新先写失败 = 退化为已知的"新旧并存"
+            // 形态,可被体检 near-duplicate 榜与下次固化兜底。
+            const contradictions = detectContradictions(candidate, decision.target)
+            if (contradictions.length > 0) {
+              // 新记忆必须用**不同的文件名**——同名会原地覆写旧文件(覆写后无物
+              // 可标 superseded,注入里该事实彻底消失,调研确认的陷阱)。
+              // LLM 按指示复用旧名时加代后缀;名字冲突再加序号。
+              // 后缀在 normalizeName 产物(≤64)之后追加会突破 64 帽(审查:
+              // 65-67 字符名 parseMemory 拒收成幽灵文件)——基名超 61 时先截断。
+              const baseName = candidate.name.length > 61 ? candidate.name.slice(0, 61) : candidate.name
+              let newName = candidate.name === decision.target.name ? `${baseName}-v2` : candidate.name
+              let attempt = 2
+              while (existingAll.some(r => r.name === newName)) {
+                attempt += 1
+                newName = `${baseName}-v${String(attempt)}`
+              }
+              await store.write({
+                ...candidate,
+                name: newName,
+                supersedes: decision.target.name,
+              }, candidate.scope, cwd)
+              try {
+                const old = await store.read(decision.target.name, decision.target.scope, cwd)
+                if (old !== null) {
+                  await store.write({
+                    name: old.name,
+                    ...(old.title !== undefined ? { title: old.title } : {}),
+                    description: old.description,
+                    type: old.type,
+                    body: old.body,
+                    pinned: old.pinned,
+                    disabled: old.disabled,
+                    status: 'superseded',
+                    supersededBy: newName,
+                  }, decision.target.scope, cwd)
+                }
+              } catch (error) {
+                // 半链(新已写、旧未标):不中止本批剩余候选——near-duplicate 兜底
+                ctx.logger.warn(`[dsh-auto-memory] supersede second step failed: ${String(error)}`)
+              }
+              written += 1
+              continue
+            }
             // update 分支不传 status/evidence:由 store.write 单点判定——
             // 内容未变(echo 刷新)继承原状态(verified 不被复述冲掉,审查 major);
             // 内容变化降回 candidate+旧证据失效;指令模式命中 disputed。
@@ -391,4 +496,19 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
       await Promise.allSettled([...active])
     }
   }, 'dsh-auto-memory consolidation')
+
+  return {
+    // 词集原料:最近 6 条 USER 行(剥前缀),拼接截 1200 字符防词集膨胀
+    getQueryText: sessionId => {
+      const cap = captures.get(sessionId)
+      if (cap === undefined) return undefined
+      const userLines = cap.lines.filter(line => line.startsWith('USER: ')).slice(-6)
+      if (userLines.length === 0) return undefined
+      return userLines.map(line => line.slice('USER: '.length)).join('\n').slice(0, 1200)
+    },
+    flush: () => Promise.allSettled([...active]).then(() => undefined),
+    cleanup: sessionId => { captures.delete(sessionId) },
+  }
 }
+
+// probe 1793306596

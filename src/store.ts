@@ -179,7 +179,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence, supersededBy, supersedes } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -200,6 +200,10 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       && typeof evidenceRaw.quote === 'string' && evidenceRaw.quote.length > 0
       ? { sessionId: evidenceRaw.sessionId.slice(0, 128), quote: evidenceRaw.quote.slice(0, 400) }
       : undefined
+    // #19 谱系指针:kebab-case 名(≤64;与 normalizeName 同形状但不复用——
+    // 它抛异常且保留字 memory 会炸 parse,这里静默丢字段)
+    const asLineage = (value: unknown): string | undefined =>
+      typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && value.length <= 64 ? value : undefined
     return {
       name: normalizeName(name),
       title: typeof title === 'string' && title.trim().length > 0 ? title.trim() : undefined,
@@ -212,6 +216,8 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       ...(asImportance(importance) !== undefined ? { importance: asImportance(importance) } : {}),
       ...(parsedStatus !== undefined ? { status: parsedStatus } : {}),
       ...(parsedEvidence !== undefined ? { evidence: parsedEvidence } : {}),
+      ...(asLineage(supersededBy) !== undefined ? { supersededBy: asLineage(supersededBy)! } : {}),
+      ...(asLineage(supersedes) !== undefined ? { supersedes: asLineage(supersedes)! } : {}),
       ...(parsedOrigin !== undefined ? { origin: parsedOrigin } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
@@ -236,6 +242,9 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     // 可信状态与证据链(1.0.0):status 缺省即信任态不落键;evidence 整块进出
     ...(record.status !== undefined ? { status: record.status } : {}),
     ...(record.evidence !== undefined ? { evidence: { sessionId: record.evidence.sessionId, quote: record.evidence.quote } } : {}),
+    // #19 演化谱系(扁平两个 string;与 status 同款条件落盘)
+    ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
+    ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
     // 导入溯源(嵌套块):字段名短、YAML 正确转义;缺省即普通记忆
     ...(record.origin !== undefined ? {
       origin: {
@@ -519,6 +528,9 @@ export class MemoryStore {
       )
       // onlyIfAbsent(导入桥):同名判定下沉锁内,杜绝锁外快照的 TOCTOU
       // (导入期间并发写入的同名记忆会被覆盖);命中即放弃本次写入,返回 null
+      // 固化候选显式带 status(sanitize 恒带 candidate)不允许复活 superseded
+      // 文件(审查 major:同名候选 create 路径会覆写 superseded 文件使其重新
+      // 注入)——superseded 只能经用户面板 restore 离开
       if (record.onlyIfAbsent === true && existing !== null) return
       // 可信状态与证据链(1.0.0,审查后统一单点语义):
       // - 调用方显式传 status → 按传入值(面板 verify/dispute/restore 是唯一
@@ -541,6 +553,13 @@ export class MemoryStore {
       const body = sanitizeContent(record.body)
       const contentChanged = existing !== null
         && (existing.description !== description || existing.body !== body || existing.type !== record.type)
+      // #19 superseded 复活守卫(审查 major):固化候选(sanitize 恒带 status
+      // 'candidate')不允许覆写 superseded 文件——create 路径的同名候选会把它
+      // 复活重新注入,与谱系语义矛盾。superseded 只能经用户面板显式 restore
+      // 离开(显式传其它 status)。放在内容计算后:面板 restore 传 'candidate'
+      // 是显式传值(record.status !== undefined),不受此守卫影响——守卫只拦
+      // "status === 'candidate' 且内容变化"的固化形态。
+      if (existing?.status === 'superseded' && record.status === 'candidate' && contentChanged) return
       let status = record.status ?? existing?.status
       if (record.status === undefined && contentChanged) {
         if (existing?.status === 'verified' || existing?.status === 'candidate') status = 'candidate'
@@ -552,6 +571,10 @@ export class MemoryStore {
       const evidence: MemoryEvidence | undefined = evidenceSource !== undefined
         ? { sessionId: evidenceSource.sessionId, quote: sanitizeContent(evidenceSource.quote) }
         : undefined
+      // #19 谱系指针继承(防面板整条重写剥链——toggleFlag/setStatus 不带谱系字段);
+      // 离开 superseded 态(显式传非 superseded 的 status)时清 supersededBy(链只活在被取代态)
+      const supersededBy = status === 'superseded' ? (record.supersededBy ?? existing?.supersededBy) : undefined
+      const supersedes = record.supersedes ?? existing?.supersedes
       // 导入溯源:首次导入按清洗后内容算指纹;后续任何写入(工具/固化/面板
       // 置顶停用)原样继承首次指纹,绝不重算——指纹只标记"导入瞬间的内容",
       // 撤销时用它判定这条是否已被改过。内容更新不重算 ≠ 指纹失效,比对时
@@ -568,6 +591,8 @@ export class MemoryStore {
         ...(importance !== undefined ? { importance } : {}),
         ...(status !== undefined ? { status } : {}),
         ...(evidence !== undefined ? { evidence } : {}),
+        ...(supersededBy !== undefined ? { supersededBy } : {}),
+        ...(supersedes !== undefined ? { supersedes } : {}),
         ...(title !== undefined ? { title: sanitizeContent(title) } : {}),
         description,
         body,

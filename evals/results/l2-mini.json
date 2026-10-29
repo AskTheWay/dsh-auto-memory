@@ -1,15 +1,15 @@
 {
   "dataset": "mini",
   "model": "deepseek-chat",
-  "date": "2026-10-24T18:03:29.169Z",
+  "date": "2026-10-29T20:49:45.866Z",
   "probes": {
     "scored": 9,
     "abstention": 3
   },
   "metrics": {
     "e2eRecall": 100,
-    "baselineRecall": 33.3,
-    "lift": 66.7,
+    "baselineRecall": 22.2,
+    "lift": 77.8,
     "abstentionWith": 100,
     "abstentionWithout": 100
   },
@@ -19,14 +19,14 @@
       "kind": "single-hop",
       "group": "with",
       "verdict": "correct",
-      "answer": "你踩过的坑是：**psycopg2 连接必须用 context manager 归还，否则连接池会被耗尽**。这是你确认过的教训（记录在 `psycopg2-use-context-manager.md`）。"
+      "answer": "你踩过的坑是：**psycopg2 连接必须用 context manager 归还，否则连接池会被耗尽**。这是你确认过的教训。"
     },
     {
       "q": "我在 psycopg2 连接池上踩过什么坑?",
       "kind": "single-hop",
       "group": "without",
       "verdict": "correct",
-      "answer": "常见坑有这些:\n\n1. **连接未归还**:用 `with getconn()` 但没在 `finally` 里 `putconn`,连接泄漏,池耗尽后 `getconn` 阻塞或报 `PoolError: connection pool exhausted`。\n2. **事务未提交/回滚**:归还的连接带着未结束的事务,下次复用时状态脏,出现锁等待或数据不一致。归还前要 `commit()` 或"
+      "answer": "常见坑有这些:\n\n1. **连接未归还**:用 `with getconn()` 但没 `putconn()`,或异常路径漏归还,导致池耗尽、请求卡死。要用 `try/finally` 或上下文管理器确保归还。\n\n2. **连接状态污染**:归还前没 `rollback()`,残留事务/锁带到下一个使用者,出现莫名阻塞或脏读。归还前应回滚未提交事务。\n\n3. **池大小配置不当**:`mincon"
     },
     {
       "q": "用什么语言和我交流比较好?",
@@ -47,77 +47,77 @@
       "kind": "single-hop",
       "group": "with",
       "verdict": "correct",
-      "answer": "idgen 项目选用了**雪花算法（Snowflake）**作为分布式 ID 生成方案；对于时钟回拨，采用**等待策略**处理。"
+      "answer": "idgen 项目选用了**雪花算法（Snowflake）**，时钟回拨采用**等待策略**处理。"
     },
     {
       "q": "idgen 项目选了什么 ID 方案?时钟回拨怎么处理?",
       "kind": "single-hop",
       "group": "without",
-      "verdict": "correct",
-      "answer": "idgen 项目选用了 **Snowflake(雪花算法)** 方案。时钟回拨处理:检测到回拨时,若回拨幅度小则**等待时钟追上**再继续生成;若回拨过大则**抛出异常/拒绝生成**,避免 ID 重复。"
+      "verdict": "wrong",
+      "answer": "idgen 项目选用了 **Snowflake(雪花算法)** 方案生成分布式 ID。\n\n时钟回拨处理:检测到当前时间小于上次生成 ID 的时间戳时,直接**抛出异常拒绝生成**(而非等待或借用其他位),由上层处理,保证 ID 单调递增、不重复。"
     },
     {
       "q": "压测数据要注意什么?",
       "kind": "single-hop",
       "group": "with",
       "verdict": "correct",
-      "answer": "压测前必须预热，前几秒冷启动产生的噪声数据要丢弃，否则结果会失真。"
+      "answer": "压测前几秒是冷启动噪声，必须先预热并丢弃这部分数据。"
     },
     {
       "q": "压测数据要注意什么?",
       "kind": "single-hop",
       "group": "without",
       "verdict": "wrong",
-      "answer": "压测数据要注意:\n1. **真实性**:尽量用生产脱敏数据或仿真数据,避免造数据导致结果失真。\n2. **数据量**:覆盖足够数据规模,模拟真实数据分布,避免空库/小数据量压测。\n3. **数据隔离**:压测数据与生产隔离,防止污染;压测后清理。\n4. **数据分布**:注意热点、冷热数据、边界值、异常值分布。\n5. **脱敏合规**:使用生产数据须脱敏,符合隐私合规要求。\n6. **可重复**:"
+      "answer": "压测数据要注意:\n1. **数据隔离**:用独立测试库/环境,避免污染生产数据。\n2. **数据真实性**:尽量贴近真实数据的分布、大小、字段类型,避免用少量重复数据导致缓存命中失真。\n3. **数据量级**:按生产规模或预期峰值准备,覆盖大数据量场景。\n4. **数据脱敏**:使用真实数据时需脱敏,防止隐私泄露。\n5. **可重复性**:数据可重置/可复现,保证多次压测结果可比。\n6. **唯一"
     },
     {
       "q": "我什么时候写代码?什么时候别打断我?",
       "kind": "single-hop",
       "group": "with",
       "verdict": "correct",
-      "answer": "你通常晚上 10 点后写代码；白天（上班时间）不要主动提建议打断你。"
+      "answer": "你通常晚上 10 点后写代码；白天上班，白天不要主动提建议打断你。"
     },
     {
       "q": "我什么时候写代码?什么时候别打断我?",
       "kind": "single-hop",
       "group": "without",
       "verdict": "wrong",
-      "answer": "写代码时：需要专注、思路连贯时（如调试、设计逻辑、写复杂函数）。  \n别打断时：你进入心流、连续敲键盘、或明确说“别打扰”时。"
+      "answer": "写代码时：进入专注状态、思路连贯时写。  \n别打断我：当我处于深度工作、调试或心流状态时。"
     },
     {
       "q": "性能问题应该先看哪里?",
       "kind": "single-hop",
       "group": "with",
       "verdict": "correct",
-      "answer": "先看内部 Grafana 可观测性面板：https://obs.internal.example.com/grafana\n\n（来自记忆：内部可观测性面板地址）"
+      "answer": "先看内部 Grafana 可观测性面板：https://obs.internal.example.com/grafana"
     },
     {
       "q": "性能问题应该先看哪里?",
       "kind": "single-hop",
       "group": "without",
       "verdict": "wrong",
-      "answer": "先看监控和 profiling 数据，定位瓶颈（CPU、内存、IO、锁、GC），而不是先猜代码。"
+      "answer": "先看监控和 profiling 数据，定位瓶颈所在（CPU、内存、IO、锁、GC 等），而不是凭猜测优化。"
     },
     {
       "q": "生产部署方案是什么?",
       "kind": "knowledge-update",
       "group": "with",
       "verdict": "correct",
-      "answer": "生产部署方案是**双机 + Nginx 负载均衡**，上线日期为 **2026-10-20**。"
+      "answer": "生产部署方案是**双机 + Nginx 负载均衡**（2026-10-20 上线，日期不变），由原单机 Docker Compose 方案变更而来。"
     },
     {
       "q": "生产部署方案是什么?",
       "kind": "knowledge-update",
       "group": "without",
       "verdict": "abstain",
-      "answer": "我没有关于“生产部署方案”的具体信息，因为本次会话没有提供相关上下文。请补充项目/系统背景或文档内容，我才能给出对应的生产部署方案。"
+      "answer": "我没有关于过往会话的记忆，也无法访问你之前提到的“生产部署方案”的具体内容。请把相关文档或上下文发给我，我才能基于你提供的信息回答。"
     },
     {
       "q": "部署时间定在哪天?",
       "kind": "temporal",
       "group": "with",
       "verdict": "correct",
-      "answer": "生产上线日期定在 **2026-10-20**（部署方案为双机 + Nginx 负载均衡）。"
+      "answer": "根据记忆，生产上线日期是 **2026-10-20**（方案已改为双机 + Nginx 负载均衡，日期不变）。"
     },
     {
       "q": "部署时间定在哪天?",
@@ -131,7 +131,7 @@
       "kind": "multi-hop",
       "group": "with",
       "verdict": "correct",
-      "answer": "两件事分别是：\n\n1. **连接池坑**：psycopg2 的连接必须用 context manager 归还，否则连接池会被耗尽。\n2. **压测教训**：压测前必须预热，前几秒冷启动的噪声数据要丢弃，否则结果会失真。"
+      "answer": "- **连接池坑**：psycopg2 连接必须用 context manager 归还，否则连接池会被耗尽。\n- **压测教训**：benchmark 前几秒是冷启动噪声，必须先预热并丢弃这部分数据。"
     },
     {
       "q": "连接池坑和压测教训,两件事分别是什么?",
@@ -152,28 +152,28 @@
       "kind": "abstention",
       "group": "without",
       "verdict": "abstain",
-      "answer": "我无法知道，因为我没有过去会话的记忆。"
+      "answer": "我不知道，因为我无法访问你的历史会话或个人信息。"
     },
     {
       "q": "我的 PG 数据库密码是什么?",
       "kind": "abstention",
       "group": "with",
       "verdict": "abstain",
-      "answer": "我不知道。记忆里没有存你的 PostgreSQL 密码，也不应该存密码这类敏感信息。建议你查一下本地的 `.pgpass`、环境变量（如 `PGPASSWORD`）或项目的密钥管理配置。"
+      "answer": "我不知道。记忆里没有存你的 PostgreSQL 密码，这类敏感凭据也不应该存在记忆里。建议查看项目的 `.env`、密钥管理服务或配置文档。"
     },
     {
       "q": "我的 PG 数据库密码是什么?",
       "kind": "abstention",
       "group": "without",
       "verdict": "abstain",
-      "answer": "我无法知道你的 PostgreSQL 数据库密码。我没有访问你系统或历史会话的能力，也无法存储或回忆任何密码信息。请检查你的密码管理器、配置文件（如 `~/.pgpass` 或 `pg_hba.conf`）或联系数据库管理员。"
+      "answer": "我无法知道你的 PostgreSQL 数据库密码。我没有访问你系统或历史会话的能力，也无法读取你的配置文件。请检查你的 `~/.pgpass`、`pg_hba.conf`、环境变量 `PGPASSWORD`，或联系数据库管理员。"
     },
     {
       "q": "idgen 项目的 deadline 是哪天?",
       "kind": "abstention",
       "group": "with",
       "verdict": "abstain",
-      "answer": "我不知道。记忆里只有 idgen 项目采用雪花算法、时钟回拨用等待策略这一条，没有记录 deadline 日期。"
+      "answer": "我不知道。记忆里只记录了 idgen 项目采用雪花算法、时钟回拨用等待策略，没有提到 deadline 是哪天。"
     },
     {
       "q": "idgen 项目的 deadline 是哪天?",

@@ -17,6 +17,7 @@
 
 import type { MemoryStore } from './store.ts'
 import type { Config } from './index.ts'
+import { descriptionCoverage } from './matching.ts'
 
 /** 唯一注入段(索引 + 指导合一)。 */
 export const MEMORY_SECTION = 'memory:index'
@@ -67,8 +68,15 @@ function namesFromIndexLines(lines: string[]): string[] {
   return names
 }
 
-/** 渲染 + 审计详情(实现体;renderMemoryIndexText 是其 text 字段的兼容包装)。 */
-export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd: string | undefined): InjectionDetail {
+/**
+ * 渲染 + 审计详情(实现体;renderMemoryIndexText 是其 text 字段的兼容包装)。
+ * query(#18 相关性截断):当前会话的冻结查询文本;仅超预算时参与——非 pinned
+ * 记忆行按"描述覆盖查询词"重排后装填,覆盖高的优先保留。缺省(undefined/空)
+ * 走现行位置式截断,行为与旧版逐字节一致(KV-safe 兼容的关键)。
+ * 词集冻结由包装层(audit.ts 的 frozenQuery)保证——本函数只消费冻结值,
+ * 自身无时间依赖(同参两次调用字节相同,trust.spec 断言)。
+ */
+export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd: string | undefined, query?: string): InjectionDetail {
   // 无 agent 上下文(裸组装)或 cwd 缺失时不贡献内容
   if (cwd === undefined) return { text: '', injected: [], truncated: [], textBytes: 0 }
   const sections: string[] = []
@@ -95,9 +103,34 @@ export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd:
     truncated = []
   } else {
     // 超预算:按行截断(保住标题与尽可能靠前的行),尾部留截断标记。
+    // #18 相关性重排:查询词可得时,非 pinned 记忆行按"行摘要覆盖查询词"
+    // (descriptionCoverage,方向=行作 gold、查询作 produced)评分稳定重排,
+    // 相关行优先装填——同一截断窗口内相关性只影响保留与否,不影响展示序
+    // (展示序仍由三因子天粒度决定,KV 前缀稳定不破)。
     // 超长单行被跳过而非终止循环(continue):一条臃肿行不应把它排序位置之后的
     // 全部记忆挤出注入——审查确认的单行 DoS。
-    const lines = index.split('\n')
+    let lines = index.split('\n')
+    if (query !== undefined && query.trim().length > 0) {
+      const scoreOf = (line: string): number => {
+        const match = /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)
+        if (match === null) return 2 // 标题/小节行:保顶,不参与重排
+        const isPinned = line.includes(' 📌')
+        if (isPinned) return 2 // pinned 领先承诺(MEMORY_POLICY_TEXT 对用户的契约)
+        // 行内可评文本 = 链接后的摘要段(' — ' 之后) + 标题段([...] 内);
+        // 分开提取再拼接,避免贪婪正则把摘要吃掉。
+        // 方向(审查 major 修正):descriptionCoverage(gold, produced) 的分母是
+        // gold——检索相关性应为"查询词被行覆盖"(query 作 gold),行作 produced;
+        // 首版反向导致长而精确的行(词多分母大)得分低、擦边短行胜出(实测倒挂)。
+        const titlePart = line.replace(/^- \[|\].*$/, '') || match[1]!
+        const descPart = line.replace(/^- \[.*\]\([^)]*\.md\)\s*—?\s*/, '')
+        return descriptionCoverage(query, `${titlePart} ${descPart}`)
+      }
+      // 稳定重排:非记忆行(标题等)与 pinned 恒 2 分保持原相对序;
+      // 记忆行按分降序(同分保持原序——Array.prototype.sort 稳定)
+      const scored = lines.map((line, i) => ({ line, i, score: scoreOf(line) }))
+      scored.sort((a, b) => b.score - a.score || a.i - b.i)
+      lines = scored.map(entry => entry.line)
+    }
     const kept: string[] = []
     let size = 0
     for (const line of lines) {
@@ -106,6 +139,8 @@ export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd:
       kept.push(line)
       size += lineSize
     }
+    // 装填后恢复展示序(重排只决定"谁活下来",不改变注入文本的行序)
+    kept.sort((a, b) => index.indexOf(a) - index.indexOf(b))
     text = `${kept.join('\n')}\n…(index truncated at ${budget} bytes — call memory_list to see all)`
     injected = namesFromIndexLines(kept)
     // 多重集差集(count-based):同名记忆可合法存在于 user+project 两层,

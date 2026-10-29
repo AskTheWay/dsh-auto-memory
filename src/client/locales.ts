@@ -131,6 +131,7 @@ export const zh = {
   exportDone: '已复制到剪贴板',
   exportFailed: '导出失败',
   importHint: 'Claude Code 有 {n} 条记忆可同步',
+  lineageReplaces: '取代了旧记忆 {name}(演化谱系)',
   scopeBoth: '用户层 + 项目层',
   scopeMissing: '不在当前索引',
 } as const
@@ -265,6 +266,7 @@ export const en: Record<PluginMemoryLocaleKey, string> = {
   exportDone: 'Copied to clipboard',
   exportFailed: 'Export failed',
   importHint: '{n} Claude Code memories ready to sync',
+  lineageReplaces: 'replaces older memory {name} (evolution lineage)',
   scopeBoth: 'user + project layers',
   scopeMissing: 'not in the current index',
 }

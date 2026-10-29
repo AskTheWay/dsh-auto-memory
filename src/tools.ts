@@ -140,6 +140,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
           type: { type: 'string', required: true },
           body: { type: 'string', required: true },
           scope: { type: 'string', required: true },
+          supersededBy: { type: 'string', description: 'Present when this memory is superseded: the name of its successor' },
           linked: {
             type: 'array',
             description: 'One-line summaries of memories referenced via [[name]] in the body',
@@ -155,11 +156,14 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         },
       },
       render: (_args, value) => {
+        const superseded = value.supersededBy !== undefined
+          ? `\n\n⚠ SUPERSEDED by "${value.supersededBy}" — this memory is outdated and no longer injected; memory_read the successor for the current fact.\n`
+          : ''
         const linkedList = value.linked ?? []
         const linked = linkedList.length === 0
           ? ''
           : `\n\nLinked memories:\n${linkedList.map(l => `- ${l.name} — ${l.description}`).join('\n')}`
-        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${linked}` }]
+        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${superseded}${linked}` }]
       },
     },
     async execute(args, exec) {
@@ -175,7 +179,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
       // 召回展开:一层 [[name]] 链接摘要(纯函数见 src/links.ts)
       const { linked } = await expandLinks(record.body, record.name, name =>
         store.findIn(name, availableScopes(), cwd))
-      return { name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked }
+      return {
+        name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked,
+        ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
+      }
     },
     isConcurrencySafe: () => true,
     presentCall: args => ({ card: 'generic', title: `Memory read: ${String(args.name)}`, kind: 'other', rawInput: args }),

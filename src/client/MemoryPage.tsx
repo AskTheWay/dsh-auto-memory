@@ -25,6 +25,9 @@ interface PanelMemory {
   stale: boolean
   /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
   status?: string
+  /** #19 谱系:被取代(值=后继名)与取代(值=前代名)。 */
+  supersededBy?: string
+  supersedes?: string
   /** 证据链(固化产物附带)。 */
   evidence?: { sessionId: string; quote: string }
   /** 创建时间(体检年龄口径)。 */
@@ -454,6 +457,8 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>({})
   /** 两步删除:当前处于"待确认"状态的记忆名(null=无)。 */
   const [deletingName, setDeletingName] = useState<string | null>(null)
+  /** #19 谱系跳转:待滚动到的记忆名(设置后清筛选+展开组,由 effect 完成滚动)。 */
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   /** 注入审计统计(0.9.0;取不到时静默无统计区——审计绝不影响面板可用性)。 */
   const [stats, setStats] = useState<AuditStatsFace | null>(null)
@@ -490,6 +495,21 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
 
   useEffect(() => { void load() }, [load])
 
+  /**
+   * #19 谱系跳转:清筛选 + 展开目标所在组后滚动到卡片。
+   * 由 effect 驱动(组展开与筛选清空是异步重渲染,同步 scrollIntoView 找不到
+   * 节点);滚动+高亮后清除目标防重复触发。找不到目标(dangling 后继)静默 no-op。
+   * 注:依赖 visibleGroups 的引用变化触发重试(组展开后卡片才存在);
+   * 插在 visibleGroups 声明之后。
+   */
+  const jumpTo = (name: string): void => {
+    setFilter('')
+    setScopeFilter('all')
+    setTypeFilter('all')
+    setClosedGroups({})
+    setJumpTarget(name)
+  }
+
   // 导入弹层是模态:Esc 关闭(与遮罩点击同语义)
   useEffect(() => {
     if (importer === null) return
@@ -521,6 +541,24 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       // 过滤态下不再保留"只有索引正文、没有命中记忆"的空组
       .filter(group => group.memories.length > 0 || (!filtering && group.indexText != null))
   }, [groups, needle, scopeFilter, typeFilter])
+
+  // #19 谱系跳转的滚动 effect:依赖 visibleGroups 的引用变化(组展开/筛选
+  // 清空触发重渲染后卡片才存在);找到即滚动+闪烁高亮,找不到静默(dangling)
+  useEffect(() => {
+    if (jumpTarget === null) return
+    // 精确匹配:id = dam-m-<groupKey>-<name>,groupKey 已知('_user'/'--slug--');
+    // 用 groups 全集拼出精确 id 再 getElementById,避免 endsWith 对
+    // 'foo-v2'/'staging-foo-v2' 的后缀误匹配(审查实测错导航)
+    const element = groups?.flatMap(g => g.memories.some(m => m.name === jumpTarget)
+      ? [document.getElementById(`dam-m-${g.key}-${jumpTarget}`)]
+      : []).find(el => el !== null)
+    if (element === undefined) return
+    element.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    element.classList.add('dam-lineage-hit')
+    window.setTimeout(() => { element.classList.remove('dam-lineage-hit') }, 1600)
+    setJumpTarget(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleGroups 引用变化即重试
+  }, [jumpTarget, visibleGroups, groups])
 
   /** 类型 chips 的计数:按作用域过滤后的全集统计(与类型筛选无关)。 */
   const typeCounts = useMemo(() => {
@@ -601,15 +639,18 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
     })()
   }
 
-  /** 可信状态流转(1.0.0):读正文后带 status 整条重写(verify/dispute/restore 共用)。 */
+  /** 可信状态流转(1.0.0):读正文后带 status 整条重写(verify/dispute/restore 共用)。
+   *  restore(离开 superseded)时同时清本条 supersedes(断链两侧同步,#19)。 */
   const setStatus = (group: PanelGroup, memory: PanelMemory, status: string): void => {
     void (async () => {
       try {
         const detail = await read({ name: memory.name, scope: group.scope, cwd: cwd(group) })
+        const leaving = memory.status === 'superseded' && status !== 'superseded'
         await act(() => write({
           cwd: cwd(group), scope: group.scope, name: memory.name, title: memory.title,
           description: memory.description, type: memory.type, body: detail.body,
           pinned: memory.pinned, disabled: memory.disabled, status,
+          ...(leaving ? { supersedes: '' } : {}),
         }))
       } catch (error) {
         console.warn('[auto-memory] status change aborted', error)
@@ -739,6 +780,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                 return (
                   <div
                     key={memory.name}
+                    id={`dam-m-${group.key}-${memory.name}`}
                     className="dam-memory"
                     data-muted={memory.disabled ? '1' : '0'}
                     data-stale={memory.stale && !memory.disabled ? '1' : '0'}
@@ -770,7 +812,20 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         {memory.status === 'candidate' && <span className="dam-badge dam-badge--cand" title={t('statusTipCandidate')}>? {t('statusCandidate')}</span>}
                         {memory.status === 'verified' && <span className="dam-badge dam-badge--ok" title={t('statusVerified')}>✓ {t('statusVerified')}</span>}
                         {memory.status === 'disputed' && <span className="dam-badge dam-badge--danger" title={t('statusTipDisputed')}>⊘ {t('statusDisputed')}</span>}
-                        {memory.status === 'superseded' && <span className="dam-badge dam-badge--muted" title={t('statusSuperseded')}>⟳ {t('statusSuperseded')}</span>}
+                        {memory.status === 'superseded' && memory.supersededBy === undefined && <span className="dam-badge dam-badge--muted" title={t('statusSuperseded')}>⟳ {t('statusSuperseded')}</span>}
+                        {memory.status === 'superseded' && memory.supersededBy !== undefined && (
+                          <span
+                            className="dam-badge dam-badge--muted dam-lineage-link"
+                            title={`${t('statusSuperseded')} → ${memory.supersededBy}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={event => { event.stopPropagation(); jumpTo(memory.supersededBy!) }}
+                            onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); jumpTo(memory.supersededBy!) } }}
+                          >⟳ {t('statusSuperseded')} → {memory.supersededBy}</span>
+                        )}
+                        {memory.status !== 'superseded' && memory.supersedes !== undefined && (
+                          <span className="dam-badge dam-badge--ok" title={t('lineageReplaces', { name: memory.supersedes })}>⇄ {memory.supersedes}</span>
+                        )}
                         <span
                           className="dam-memory-time"
                           title={memory.updatedMs !== undefined ? new Date(memory.updatedMs).toLocaleString() : undefined}

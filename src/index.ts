@@ -38,6 +38,8 @@ export interface Config {
   autoSummarizeMaxMemories: number
   /** 固化模型调用的输出 token 上限。 */
   autoSummarizeMaxTokens: number
+  /** #17 固化价值门槛:候选有效分(importance ?? 类型缺省)低于此值直接丢弃,不落盘。 */
+  minImportance: number
   /** P1:软淘汰阈值(天)——超过且从未被读取的记忆在索引重建时从注入索引隐藏(文件保留)。0 禁用。 */
   staleAfterDays: number
 }
@@ -49,6 +51,7 @@ export const Config: z<Config> = z.object({
   autoSummarize: z.boolean().default(false),
   autoSummarizeMaxMemories: z.number().default(5),
   autoSummarizeMaxTokens: z.number().default(2048),
+  minImportance: z.number().default(4),
   staleAfterDays: z.number().default(0),
 })
 
@@ -71,12 +74,14 @@ export function apply(ctx: Context, config: Config): void {
     })
   })
 
-  // P1:会话结束自动固化(autoSummarize=false 时 no-op)
-  registerConsolidation(ctx, store, {
+  // P1:会话结束自动固化(autoSummarize=false 时 no-op);
+  // 同时把会话捕获查询器交给注入侧(#18 相关性截断的词集来源)
+  const consolidation = registerConsolidation(ctx, store, {
     autoSummarize: config.autoSummarize,
     autoSummarizeMaxMemories: config.autoSummarizeMaxMemories,
     autoSummarizeMaxTokens: config.autoSummarizeMaxTokens,
     enableUserScope: config.enableUserScope,
+    minImportance: config.minImportance,
   })
 
   // P1:软淘汰的会话启动评估(审查 major 修复):淘汰是索引重建时的惰性评估,
@@ -102,11 +107,16 @@ export function apply(ctx: Context, config: Config): void {
   // peer 升级到 >=0.1.6 后可改用 interpolate: false 并去掉中和逻辑。
   // 0.9.0:注入经 registerInjectionAudit 包装——注入集合(按会话)变化时追加
   // audit.jsonl(注入审计 #11);返回值即注入文本,审计纯副作用绝不影响注入。
-  const audit = registerInjectionAudit(store, config, rootDir)
+  // 1.3.0(#18):固化 handle 的 getQueryText 传入——注入侧冻结会话词集,
+  // 超预算时按相关性截断(词集由 audit 层冻结,KV-safe)
+  const audit = registerInjectionAudit(store, config, rootDir, consolidation.getQueryText)
   ctx.systemPrompt.section({
     name: MEMORY_SECTION,
     order: 4000,
     text: context => audit.text(context.agent?.session.header.cwd, context.agent?.session.id),
   })
-  ctx.on('session/disposed', session => { audit.cleanup(session.id) })
+  ctx.on('session/disposed', session => {
+    audit.cleanup(session.id)
+    consolidation.cleanup(session.id)
+  })
 }

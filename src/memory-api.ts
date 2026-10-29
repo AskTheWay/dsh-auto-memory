@@ -41,6 +41,10 @@ export interface PanelMemory {
   stale: boolean
   /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
   status?: MemoryStatus
+  /** #19 谱系:本条被哪条记忆取代(仅 superseded 态;面板跳转后继)。 */
+  supersededBy?: string
+  /** #19 谱系:本条取代了哪条旧记忆(徽章 tooltip 展示)。 */
+  supersedes?: string
   /** 证据链(固化产物附带;面板验证决策的依据)。 */
   evidence?: MemoryEvidence
   /** 创建时间(体检的年龄计算/面板 tooltip)。 */
@@ -121,6 +125,8 @@ async function readGroup(
       disabled: record.disabled === true,
       stale: isStale(record, staleAfterDays, now),
       ...(record.status !== undefined ? { status: record.status } : {}),
+      ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
+      ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
       ...(record.evidence !== undefined ? { evidence: record.evidence } : {}),
       ...(record.createdMs !== undefined ? { createdMs: record.createdMs } : {}),
       reads: record.reads ?? 0,
@@ -338,6 +344,7 @@ export function registerMemoryApi(
           cwd?: string; scope: MemoryScope; name: string; title?: string
           description: string; type: MemoryType; body: string; pinned?: boolean; disabled?: boolean
           status?: MemoryStatus
+          supersedes?: string
         }
         const cwd = body.scope === 'project' ? body.cwd : undefined
         if (body.scope === 'project' && (cwd === undefined || cwd.length === 0)) {
@@ -364,6 +371,9 @@ export function registerMemoryApi(
           ...(body.disabled !== undefined ? { disabled: body.disabled } : {}),
           // 可信状态双向透传(1.0.0):面板 verify/dispute 是唯一的状态流转入口
           ...(body.status !== undefined ? { status: body.status } : {}),
+        // 谱系字段双向透传(#19):面板 restore 需能显式清 supersedes(空串=
+        // 清除,断链两侧同步;undefined=不改)
+        ...(body.supersedes !== undefined ? { supersedes: body.supersedes.length > 0 ? body.supersedes : undefined } : {}),
           description: body.description.trim().slice(0, 160),
           type: body.type,
           body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',
