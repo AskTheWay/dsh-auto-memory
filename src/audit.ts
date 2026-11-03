@@ -148,7 +148,7 @@ export interface AuditStats {
   /** 按工作区聚合(注入次数降序):回答"哪个项目在吃预算/被截断"。 */
   projects: AuditProjectStats[]
   /** 最近 sessionsLimit 个注入事件(时间线视图,ts 升序)。 */
-  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number }>
+  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number; injected?: string[]; truncatedNames?: string[] }>
 }
 
 /**
@@ -236,6 +236,8 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
     avgBytes,
     memories,
     projects,
+    // 1.4.0:时间线条目携带注入/截断名单(面板展开查看具体内容);
+    // 名单封顶 60 防极端载荷(单次注入常态 ~30 行)
     timeline: entries.slice(-sessionsLimit).map(entry => ({
       ts: entry.ts,
       sessionId: entry.sessionId,
@@ -243,6 +245,8 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
       count: entry.injected.length,
       bytes: entry.bytes,
       truncated: entry.truncated.length,
+      injected: entry.injected.slice(0, 60),
+      truncatedNames: entry.truncated.slice(0, 60),
     })),
   }
 }

@@ -99,7 +99,7 @@ interface AuditStatsFace {
     truncated: number
     lastTs: number
   }>
-  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number }>
+  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number; injected?: string[]; truncatedNames?: string[] }>
 }
 
 /** 导入弹层状态机。 */
@@ -240,8 +240,10 @@ function HealthSection({ health, t }: { health: HealthReportFace; t: Translate }
       <summary>
         <span aria-hidden>🩺</span>
         <span className="dam-stats-title">{t('healthTitle')}</span>
-        <span className="dam-stats-sub">
-          {health.unverified.length} / {health.zombies.length} / {health.conflicts.length}
+        <span className="dam-row" style={{ gap: '5px', marginLeft: 'auto', marginRight: '4px' }}>
+          {health.unverified.length > 0 && <span className="dam-health-pill" data-kind="unverified">? {health.unverified.length}</span>}
+          {health.zombies.length > 0 && <span className="dam-health-pill" data-kind="zombies">💤 {health.zombies.length}</span>}
+          {health.conflicts.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⚠ {health.conflicts.length}</span>}
         </span>
       </summary>
       <div className="dam-health-body">
@@ -274,7 +276,7 @@ function HealthSection({ health, t }: { health: HealthReportFace; t: Translate }
   )
 }
 
-function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; now: number }): ReactNode {
+function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Translate; now: number; groups: PanelGroup[] | null }): ReactNode {
   type StatsMemory = AuditStatsFace['memories'][number]
   type Scope = NonNullable<StatsMemory['scope']>
   const total = stats.memories.length
@@ -286,10 +288,38 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
   const truncated = stats.memories
     .filter(m => (m.truncatedCount ?? 0) > 0)
     .sort((a, b) => (b.truncatedCount ?? 0) - (a.truncatedCount ?? 0))
+  const truncTotal = stats.memories.reduce((sum, m) => sum + (m.truncatedCount ?? 0), 0)
   const projects = stats.projects ?? projectsFromTimeline(stats.timeline)
   const projectsApproximate = stats.projects === undefined
   const maxProjectInjections = projects.reduce((max, project) => Math.max(max, project.injections), 0)
   const scopeByName = new Map(stats.memories.map(memory => [memory.name, memory.scope]))
+  /** 时间线展开状态:当前展开的注入事件 ts(null=全部收起)。 */
+  const [openTs, setOpenTs] = useState<number | null>(null)
+
+  // ---- 1.4.0 新增派生数据 ----
+  /** 活动柱图:最近 24 次注入(时间升序),高=字节,色=项目色 */
+  const activity = stats.timeline.slice(-24)
+  const maxActivityBytes = activity.reduce((max, e) => Math.max(max, e.bytes), 0)
+  const colorByCwd = new Map<string, string>()
+  projects.forEach((project, index) => colorByCwd.set(project.cwd, PROJECT_COLORS[index % PROJECT_COLORS.length]))
+  /** 作用域分布:按注入次数加权的 user/project/both/missing 份额 */
+  const scopeShare = new Map<Scope | 'missing', number>()
+  for (const m of stats.memories) {
+    const key = m.scope ?? 'missing'
+    scopeShare.set(key, (scopeShare.get(key) ?? 0) + m.injectedCount)
+  }
+  const scopeTotal = [...scopeShare.values()].reduce((a, b) => a + b, 0) || 1
+  /** 类型分布:全库记忆的 4 类型条数(groups 全集,与 stats 正交) */
+  const typeShare = new Map<string, number>()
+  let typeTotal = 0
+  if (groups !== null) {
+    for (const g of groups) {
+      for (const m of g.memories) {
+        typeShare.set(m.type, (typeShare.get(m.type) ?? 0) + 1)
+        typeTotal += 1
+      }
+    }
+  }
 
   const scopeLabel = (scope: Scope | undefined): string => {
     switch (scope) {
@@ -300,12 +330,13 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
     }
   }
 
-  /** 注入榜一行:作用域圆点 + 名字 + 占比条 + n/m + 截断警告(所有列固定对齐)。 */
-  const rankRow = (memory: StatsMemory): ReactNode => {
+  /** 注入榜一行:排名 + 作用域圆点 + 名字 + 占比条 + n/m + 截断警告。 */
+  const rankRow = (memory: StatsMemory, index: number): ReactNode => {
     const scope = memory.scope ?? 'missing'
     const pct = stats.injections === 0 ? 0 : Math.min(100, (memory.injectedCount / stats.injections) * 100)
     return (
-      <div key={memory.name} className="dam-rank-row" data-scope={scope}>
+      <div key={memory.name} className="dam-rank-row" data-scope={scope} data-rank={String(index + 1)}>
+        <span className="dam-rank-num">{index + 1}</span>
         <span className="dam-scope-dot" title={scopeLabel(memory.scope)} />
         <code className="dam-rank-name" title={memory.name}>{memory.name}</code>
         <span className="dam-mini-bar" title={`${memory.injectedCount}/${stats.injections}`}>
@@ -326,6 +357,24 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
     </div>
   )
 
+  /** 分布条一段(seg):份额 >12% 才放行内数字,窄段只留 hover title。 */
+  const distSeg = (key: string, kind: 'scope' | 'type', value: number, colorHint: string, label: string): ReactNode => {
+    const pct = (value / (kind === 'scope' ? scopeTotal : typeTotal)) * 100
+    if (pct <= 0) return null
+    return (
+      <span
+        key={key}
+        className="dam-dist-seg"
+        data-scope={kind === 'scope' ? key : undefined}
+        data-type={kind === 'type' ? key : undefined}
+        style={{ width: `${pct}%` }}
+        title={`${label}: ${value} (${Math.round(pct)}%)${colorHint.length > 0 ? '' : ''}`}
+      >
+        {pct >= 14 ? <b>{Math.round(pct)}%</b> : null}
+      </span>
+    )
+  }
+
   return (
     <details className="dam-stats">
       <summary>
@@ -340,12 +389,95 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
       </summary>
 
       <div className="dam-stats-body">
-        {/* 指标条:一个容器三格,用分隔线而不是三个独立盒子 */}
-        <div className="dam-metrics">
+        {/* 指标条:四格(会话/注入/均段/截断) */}
+        <div className="dam-metrics" style={{ gridTemplateColumns: 'repeat(4,minmax(0,1fr))' }}>
           <div className="dam-metric"><b>{stats.sessions}</b><span>{t('statsSessions')}</span></div>
           <div className="dam-metric"><b>{stats.injections}</b><span>{t('statsInjections')}</span></div>
           <div className="dam-metric"><b>{(avgBytes / 1024).toFixed(1)}K</b><span>{t('statsAvg')}</span></div>
+          <div className="dam-metric"><b style={{ color: truncTotal > 0 ? 'var(--dsw-alias-state-warn-primary,#d97706)' : undefined }}>{truncTotal}</b><span>{t('statsTruncMetric')}</span></div>
         </div>
+
+        {/* 活动柱图:最近注入的字节走势,色=项目;左 Y 轴刻度 + 横向网格线 + 底部时间轴 */}
+        {activity.length > 1 && (
+          <div className="dam-block">
+            <p className="dam-section">{t('statsActivity')}</p>
+            <div className="dam-chart-row">
+              <div className="dam-chart-y" aria-hidden="true">
+                <span>{(maxActivityBytes / 1024).toFixed(1)}K</span>
+                <span>{(maxActivityBytes / 2048).toFixed(1)}K</span>
+                <span>0</span>
+              </div>
+              <div className="dam-chart">
+                <div className="dam-chart-grid" aria-hidden="true"><i /><i /><i /></div>
+                {activity.map((entry, index) => {
+                  const height = maxActivityBytes === 0 ? 4 : Math.max(6, Math.round((entry.bytes / maxActivityBytes) * 100))
+                  const color = colorByCwd.get(entry.cwd)
+                  const isLatest = index === activity.length - 1
+                  const label = (entry.cwd.split(/[\\/]/).pop() ?? entry.cwd) || '—'
+                  return (
+                    <span
+                      key={`${entry.sessionId}-${entry.ts}`}
+                      className="dam-chart-bar"
+                      data-latest={isLatest ? '1' : '0'}
+                      style={{ height: `${height}%`, ...(color !== undefined && !isLatest ? { background: color, opacity: 0.7 } : {}) }}
+                      title={`${label} · ${(entry.bytes / 1024).toFixed(1)}K · ${entry.count}${t('statsMemories')}${entry.truncated > 0 ? ` · ⚠${entry.truncated}` : ''}\n${new Date(entry.ts).toLocaleString()}`}
+                    />
+                  )
+                })}
+              </div>
+              <span aria-hidden="true" />
+              <div className="dam-chart-cap">
+                <span>{relativeTime(activity[0]?.ts, now, t)}</span>
+                <span>{relativeTime(activity[Math.floor(activity.length / 2)]?.ts, now, t)}</span>
+                <span>{relativeTime(activity[activity.length - 1]?.ts, now, t)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 双分布:作用域(按注入加权)+ 类型(全库条数) */}
+        {(scopeShare.size > 1 || typeShare.size > 1) && (
+          <div className="dam-duo">
+            {scopeShare.size > 1 && (
+              <div className="dam-dist">
+                <p className="dam-section" style={{ margin: 0 }}>{t('statsScopeShare')}</p>
+                <div className="dam-dist-bar">
+                  {([...scopeShare.entries()] as Array<[Scope | 'missing', number]>)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([key, value]) => distSeg(key, 'scope', value, '', scopeLabel(key === 'missing' ? undefined : key)))}
+                </div>
+                <div className="dam-legend">
+                  {([...scopeShare.entries()] as Array<[Scope | 'missing', number]>)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([key, value]) => (
+                      <span key={key} className="dam-legend-item">
+                        <span className="dam-scope-dot" data-scope={key} />{scopeLabel(key === 'missing' ? undefined : key)} {value}
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+            {typeShare.size > 1 && (
+              <div className="dam-dist">
+                <p className="dam-section" style={{ margin: 0 }}>{t('statsTypeShare')}</p>
+                <div className="dam-dist-bar">
+                  {(['user', 'feedback', 'project', 'reference'] as const)
+                    .filter(type => (typeShare.get(type) ?? 0) > 0)
+                    .map(type => distSeg(type, 'type', typeShare.get(type) ?? 0, '', type))}
+                </div>
+                <div className="dam-legend">
+                  {(['user', 'feedback', 'project', 'reference'] as const)
+                    .filter(type => (typeShare.get(type) ?? 0) > 0)
+                    .map(type => (
+                      <span key={type} className="dam-legend-item">
+                        <span className="dam-scope-dot" data-type={type} style={{ background: undefined }} />{type} {typeShare.get(type)}
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="dam-block">
           <div className="dam-block-head">
@@ -359,11 +491,11 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
             </div>
           </div>
           {allFull && <p className="dam-note">{t('statsAllInjected', { n: total, m: stats.injections })}</p>}
-          {ranked.map(rankRow)}
+          {ranked.map((memory, index) => rankRow(memory, index))}
           {rest.length > 0 && (
             <details className="dam-subdetails">
               <summary>{t('statsAll', { n: total })}</summary>
-              {rest.map(rankRow)}
+              {rest.map((memory, index) => rankRow(memory, index + 8))}
             </details>
           )}
         </div>
@@ -416,19 +548,49 @@ function StatsSection({ stats, t, now }: { stats: AuditStatsFace; t: Translate; 
         <div className="dam-block">
           <p className="dam-section">{t('statsTimeline')}</p>
           <div className="dam-timeline">
-            {stats.timeline.slice(-8).reverse().map((entry, index) => (
-              <div key={`${entry.sessionId}-${entry.ts}`} className="dam-tl-item" data-latest={index === 0 ? '1' : '0'}>
-                <div className="dam-tl-top">
-                  <span className="dam-tl-ws" title={entry.cwd}>{(entry.cwd.split(/[\\/]/).pop() ?? entry.cwd) || '—'}</span>
-                  <span className="dam-tl-time">{relativeTime(entry.ts, now, t)}</span>
-                  {entry.truncated > 0 && <span className="dam-warn">⚠ {entry.truncated}</span>}
+            {stats.timeline.slice(-8).reverse().map((entry, index) => {
+              const names = entry.injected ?? []
+              const cutNames = entry.truncatedNames ?? []
+              const expandable = names.length > 0 || cutNames.length > 0
+              const open = openTs === entry.ts
+              return (
+                <div
+                  key={`${entry.sessionId}-${entry.ts}`}
+                  className="dam-tl-item"
+                  data-latest={index === 0 ? '1' : '0'}
+                  data-open={open ? '1' : '0'}
+                  role={expandable ? 'button' : undefined}
+                  tabIndex={expandable ? 0 : -1}
+                  title={expandable ? (open ? t('statsCollapse') : t('statsExpand')) : undefined}
+                  onClick={() => { if (expandable) setOpenTs(open ? null : entry.ts) }}
+                  onKeyDown={event => {
+                    if (!expandable) return
+                    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setOpenTs(open ? null : entry.ts) }
+                  }}
+                >
+                  <div className="dam-tl-top">
+                    <span className="dam-tl-ws" title={entry.cwd}>{(entry.cwd.split(/[\\/]/).pop() ?? entry.cwd) || '—'}</span>
+                    <span className="dam-tl-time">{relativeTime(entry.ts, now, t)}</span>
+                    {entry.truncated > 0 && <span className="dam-warn">⚠ {entry.truncated}</span>}
+                    {expandable && <span className="dam-tl-chev" aria-hidden="true">{open ? '▾' : '▸'}</span>}
+                  </div>
+                  <div className="dam-tl-meta">
+                    <span className="dam-pill">{entry.count} {t('statsMemories')}</span>
+                    <span className="dam-pill">{(entry.bytes / 1024).toFixed(1)} KB</span>
+                  </div>
+                  {open && (
+                    <div className="dam-tl-names">
+                      {names.map(name => (
+                        <span key={name} className="dam-tl-name" title={name}><span className="dam-scope-dot" data-scope={scopeByName.get(name) ?? 'missing'} />{name}</span>
+                      ))}
+                      {cutNames.map(name => (
+                        <span key={`cut-${name}`} className="dam-tl-name dam-tl-name--cut" title={`${name} — ${t('statsTruncatedTop')}`}><span aria-hidden="true">✂</span>{name}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="dam-tl-meta">
-                  <span className="dam-pill">{entry.count} {t('statsMemories')}</span>
-                  <span className="dam-pill">{(entry.bytes / 1024).toFixed(1)} KB</span>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       </div>
@@ -1073,7 +1235,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
         </div>
       )}
 
-      {stats !== null && stats.injections > 0 && <StatsSection stats={stats} t={t} now={now} />}
+      {stats !== null && stats.injections > 0 && <StatsSection stats={stats} t={t} now={now} groups={groups} />}
       {health !== null && (health.unverified.length > 0 || health.zombies.length > 0 || health.conflicts.length > 0) && (
         <HealthSection health={health} t={t} />
       )}
