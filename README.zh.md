@@ -14,7 +14,7 @@
 > 零服务器、零 embedding、零配置。
 
 ```sh
-dsh plugin --profile demo add dsh-auto-memory
+dsh plugin --profile web add dsh-auto-memory
 ```
 
 今天对它说 *"记住:我是准备面试的 Python 后端工程师"*——
@@ -170,14 +170,27 @@ ISO `modified` → 时间戳),同名记忆跳过、绝不覆盖。
 
 ## 安装
 
+包发布在 npm([dsh-auto-memory](https://www.npmjs.com/package/dsh-auto-memory))——
+`dsh plugin add` 直接从 registry 拉取,无需手动下载:
+
 ```sh
-dsh plugin --profile demo add dsh-auto-memory   # npm 直装(预构建)
-dsh --profile demo                               # 重启 profile 生效
+# 1) 装进某个 profile(web 是默认的图形 profile;
+#    用别的 profile 就换成你自己的名字)
+dsh plugin --profile web add dsh-auto-memory
+
+# 2) 重启 profile —— 完成
+dsh web
 ```
 
-源码安装:`npm install && npm run build && dsh plugin --profile demo add /绝对路径`。
+**用桌面端?** 打开内置插件管理器(Plugins 页),搜索 `dsh-auto-memory`
+点安装——同一个包、同版本号。
+
+源码安装:`npm install && npm run build && dsh plugin --profile web add /绝对路径`。
 要求 `@deepseek-ai/dsh >= 0.1.5-rc.2`(Node `^22.19 || >=24`)。
 兼容官方桌面端——已在 0.2.0-rc.2 实测。
+
+装完就能用:对智能体说 *"记住:代码注释用中文"*;在 Web UI 打开「记忆」
+面板管理;聊几个会话后回来看注入统计。
 
 ## 配置
 

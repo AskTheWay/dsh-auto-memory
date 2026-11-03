@@ -14,7 +14,7 @@
 > zero servers, zero embeddings, zero setup.
 
 ```sh
-dsh plugin --profile demo add dsh-auto-memory
+dsh plugin --profile web add dsh-auto-memory
 ```
 
 Say *"Remember: I'm a Python backend engineer preparing for interviews"* today —
@@ -210,14 +210,28 @@ exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).
 
 ## Install
 
+The package lives on npm ([dsh-auto-memory](https://www.npmjs.com/package/dsh-auto-memory)) —
+`dsh plugin add` pulls it straight from the registry, no manual download:
+
 ```sh
-dsh plugin --profile demo add dsh-auto-memory   # from npm (prebuilt)
-dsh --profile demo                               # restart the profile
+# 1) install into a profile (web is the default graphical one;
+#    substitute your own profile name if you use another)
+dsh plugin --profile web add dsh-auto-memory
+
+# 2) restart the profile — done
+dsh web
 ```
 
-From source: `npm install && npm run build && dsh plugin --profile demo add /abs/path`.
+**Desktop client instead?** Open the built-in plugin manager (Plugins page),
+search `dsh-auto-memory`, click install — same package, same versions.
+
+From source: `npm install && npm run build && dsh plugin --profile web add /abs/path`.
 Requires `@deepseek-ai/dsh >= 0.1.5-rc.2` (Node `^22.19 || >=24`). Works with
 the official desktop client — verified on 0.2.0-rc.2.
+
+Then just talk to your agent: say *"remember that I prefer Chinese comments"*,
+open the **Memory** panel in the web UI, or watch the injection stats fill up
+after a few sessions.
 
 ## Configuration
 
