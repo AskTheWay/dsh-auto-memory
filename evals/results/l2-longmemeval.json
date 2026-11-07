@@ -2,22 +2,22 @@
   "benchmark": "LongMemEval-S (cleaned) subset",
   "model": "deepseek-chat",
   "judge": "deepseek-chat",
-  "date": "2026-10-24T19:18:26.843Z",
+  "date": "2026-11-06T13:20:59.189Z",
   "subset": {
     "n": 30,
     "seed": 20261,
     "sampling": "stratified by question_type, 3 abs included"
   },
   "metrics": {
-    "taskAveragedAccuracy": 33.9,
-    "overallAccuracy": 23.3,
+    "taskAveragedAccuracy": 24.3,
+    "overallAccuracy": 20,
     "abstentionAccuracy": 100,
     "perType": {
       "single-session-user": "1/1",
       "multi-session": "0/8",
-      "single-session-preference": "1/2",
-      "temporal-reasoning": "0/8",
-      "knowledge-update": "1/5",
+      "single-session-preference": "0/2",
+      "temporal-reasoning": "1/8",
+      "knowledge-update": "0/5",
       "single-session-assistant": "1/3"
     }
   },
@@ -98,7 +98,7 @@
       "question_id": "75832dbd",
       "question_type": "single-session-preference",
       "abs": false,
-      "correct": true
+      "correct": false
     },
     {
       "question_id": "54026fce",
@@ -128,7 +128,7 @@
       "question_id": "gpt4_f420262d",
       "question_type": "temporal-reasoning",
       "abs": false,
-      "correct": false
+      "correct": true
     },
     {
       "question_id": "gpt4_f49edff3",
@@ -170,7 +170,7 @@
       "question_id": "7401057b",
       "question_type": "knowledge-update",
       "abs": false,
-      "correct": true
+      "correct": false
     },
     {
       "question_id": "3ba21379",

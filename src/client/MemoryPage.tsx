@@ -83,6 +83,13 @@ interface HealthReportFace {
   conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
 }
 
+/** 设置中心响应形状(config.get,1.4.0)。 */
+interface SettingsFace {
+  effective: Record<string, number | boolean>
+  overrides: Record<string, number | boolean>
+  sources: Record<string, string>
+}
+
 /** 注入审计统计(audit.stats 响应形状,0.9.0;avgBytes/truncatedCount/scope 为 0.9.1 新增,projects 为 0.10.1 新增)。 */
 interface AuditStatsFace {
   sessions: number
@@ -116,11 +123,15 @@ type ImportState =
 export type MemoryPageProps = PropsRuntime<'main'> & PropsLocale<'autoMemory'> & MemoryFace
 
 /** 类型 tag 的 CSS 类映射(描边色编码,颜色定义在 PANEL_CSS)。 */
+/**
+ * 类型标签:统一中性 chip(等宽小写)——类型可用文字/筛选表达,彩色留给
+ * 作用域身份与图表 mark(1.5.0 视觉纪律:全屏彩色像素占比 <10%)。
+ */
 const TYPE_TAG: Record<string, string> = {
-  user: 'dam-tag dam-tag--user',
-  feedback: 'dam-tag dam-tag--feedback',
-  project: 'dam-tag dam-tag--project',
-  reference: 'dam-tag dam-tag--reference',
+  user: 'dam-tag',
+  feedback: 'dam-tag',
+  project: 'dam-tag',
+  reference: 'dam-tag',
 }
 
 /** 行内操作图标(单色 SVG,跟随主题文字色;不依赖 emoji 字体)。 */
@@ -134,8 +145,16 @@ const ICONS = {
   search: ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z', 'm21 21-4.3-4.3'],
   refresh: ['M21 12a9 9 0 1 1-2.6-6.4', 'M21 3v6h-6'],
   download: ['M12 3v12', 'm7 10 5 5 5-5', 'M4 21h16'],
+  upload: ['M12 21V9', 'm7 14 5-5 5 5', 'M4 3h16'],
   chevron: ['m9 6 6 6-6 6'],
   close: ['M6 6l12 12', 'M18 6 6 18'],
+  user: ['M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2', 'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'],
+  folder: ['M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z'],
+  chart: ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M22 20H2'],
+  target: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z', 'M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z'],
+  pulse: ['M3 12h4l2-7 4 14 2-7h6'],
+  gear: ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z', 'M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z'],
+  clock: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', 'M12 7v5l3 3'],
 } as const
 
 function Icon({ name, size = 14 }: { name: keyof typeof ICONS, size?: number }): ReactNode {
@@ -159,9 +178,6 @@ function Icon({ name, size = 14 }: { name: keyof typeof ICONS, size?: number }):
 
 /** 类型筛选 chips 的顺序(与 tag 编码一致)。 */
 const TYPE_ORDER = ['user', 'feedback', 'project', 'reference'] as const
-
-/** 按项目统计条的配色(确定性轮换;只用于项目身份,不承载语义)。 */
-const PROJECT_COLORS = ['#4d76e6', '#8b5cf6', '#0ea5e9', '#14b8a6', '#f59e0b', '#ec4899'] as const
 
 /** 字节数的紧凑展示(索引体积都很小,统一 B/KB)。 */
 function formatBytes(bytes: number): string {
@@ -230,49 +246,80 @@ function projectsFromTimeline(timeline: AuditStatsFace['timeline']): ProjectRow[
  * emoji 徽章——emoji 宽度随平台变化,是之前"项目图标挤歪统计列"的根因。
  */
 /**
- * 记忆体检卡(1.0.0):待验证/僵尸/矛盾三榜——只读报告,行动在对应记忆卡片上
+ * 记忆体检(1.0.0):待验证/僵尸/矛盾三榜——只读报告,行动在对应记忆卡片上
  * (卡片带 candidate 徽章与 ✓/⊘ 按钮;行内标注归属层)。
+ * 1.5.0:并入独立体检 tab;每行可点 = 切回记忆 tab 并直达该卡片(onLocate)。
  */
-function HealthSection({ health, t }: { health: HealthReportFace; t: Translate }): ReactNode {
+function HealthSection({ health, t, onLocate }: { health: HealthReportFace; t: Translate; onLocate: (name: string) => void }): ReactNode {
   const scopeLabel = (scope: string): string => (scope === 'user' ? t('scopeUser') : t('scopeProject'))
   return (
-    <details className="dam-health">
-      <summary>
-        <span aria-hidden>🩺</span>
-        <span className="dam-stats-title">{t('healthTitle')}</span>
+    <section className="dam-stats">
+      <header className="dam-stats-head">
+        <span className="dam-stats-glyph" aria-hidden="true"><Icon name="pulse" size={15} /></span>
+        <span className="dam-stats-titles">
+          <span className="dam-stats-title">{t('healthTitle')}</span>
+          <span className="dam-stats-sub">{t('healthHint')}</span>
+        </span>
         <span className="dam-row" style={{ gap: '5px', marginLeft: 'auto', marginRight: '4px' }}>
           {health.unverified.length > 0 && <span className="dam-health-pill" data-kind="unverified">? {health.unverified.length}</span>}
-          {health.zombies.length > 0 && <span className="dam-health-pill" data-kind="zombies">💤 {health.zombies.length}</span>}
+          {health.zombies.length > 0 && <span className="dam-health-pill" data-kind="zombies"><Icon name="clock" size={10} /> {health.zombies.length}</span>}
           {health.conflicts.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⚠ {health.conflicts.length}</span>}
         </span>
-      </summary>
-      <div className="dam-health-body">
-        <p className="dam-section">{t('healthUnverified')}</p>
-        {health.unverified.map(m => (
-          <div key={`u-${m.scope}-${m.slug}-${m.name}`} className="dam-health-row">
-            <span className="dam-badge dam-badge--cand">? {t('statusCandidate')}</span>
-            <code title={m.name}>{m.name}</code>
-            <span className="dam-health-meta">{scopeLabel(m.scope)}{m.hasEvidence ? ' · 📎' : ''}</span>
-          </div>
-        ))}
-        <p className="dam-section">{t('healthZombies')}</p>
-        {health.zombies.map(m => (
-          <div key={`z-${m.scope}-${m.slug}-${m.name}`} className="dam-health-row">
-            <span className="dam-badge dam-badge--muted">💤</span>
-            <code title={m.name}>{m.name}</code>
-            <span className="dam-health-meta">{scopeLabel(m.scope)} · {m.ageDays}d</span>
-          </div>
-        ))}
-        <p className="dam-section">{t('healthConflicts')}</p>
-        {health.conflicts.map((c, i) => (
-          <div key={`c-${String(i)}`} className="dam-health-row">
-            <span className="dam-badge dam-badge--danger">{c.kind === 'cross-scope' ? t('healthCrossScope') : t('healthNearDup')}</span>
-            <code title={c.a.name}>{c.a.name}</code>
-            <span className="dam-health-meta">↔ {c.b.name} ({scopeLabel(c.b.scope)})</span>
-          </div>
-        ))}
+      </header>
+      <div className="dam-health-cols">
+        <div className="dam-block">
+          <p className="dam-section">{t('healthUnverified')}</p>
+          {health.unverified.length === 0 && <p className="dam-note">{t('healthNone')}</p>}
+          {health.unverified.map(m => (
+            <button
+              type="button"
+              key={`u-${m.scope}-${m.slug}-${m.name}`}
+              className="dam-health-row"
+              title={t('healthLocateTip')}
+              onClick={() => { onLocate(m.name) }}
+            >
+              <span className="dam-badge dam-badge--cand">? {t('statusCandidate')}</span>
+              <code title={m.name}>{m.name}</code>
+              <span className="dam-health-meta">{scopeLabel(m.scope)}{m.hasEvidence ? ' · 📎' : ''}</span>
+            </button>
+          ))}
+        </div>
+        <div className="dam-block">
+          <p className="dam-section">{t('healthZombies')}</p>
+          {health.zombies.length === 0 && <p className="dam-note">{t('healthNone')}</p>}
+          {health.zombies.map(m => (
+            <button
+              type="button"
+              key={`z-${m.scope}-${m.slug}-${m.name}`}
+              className="dam-health-row"
+              title={t('healthLocateTip')}
+              onClick={() => { onLocate(m.name) }}
+            >
+              <span className="dam-badge dam-badge--muted"><Icon name="clock" size={10} /></span>
+              <code title={m.name}>{m.name}</code>
+              <span className="dam-health-meta">{scopeLabel(m.scope)} · {m.ageDays}d</span>
+            </button>
+          ))}
+        </div>
+        <div className="dam-block">
+          <p className="dam-section">{t('healthConflicts')}</p>
+          {health.conflicts.length === 0 && <p className="dam-note">{t('healthNone')}</p>}
+          {health.conflicts.map((c, i) => (
+            <button
+              type="button"
+              key={`c-${String(i)}`}
+              className="dam-health-row"
+              title={t('healthLocateTip')}
+              onClick={() => { onLocate(c.a.name) }}
+            >
+              <span className="dam-badge dam-badge--danger">{c.kind === 'cross-scope' ? t('healthCrossScope') : t('healthNearDup')}</span>
+              <code title={c.a.name}>{c.a.name}</code>
+              <span className="dam-health-meta" title={`${c.b.name} (${scopeLabel(c.b.scope)})`}>↔ {c.b.name} ({scopeLabel(c.b.scope)})</span>
+            </button>
+          ))}
+        </div>
       </div>
-    </details>
+    </section>
   )
 }
 
@@ -297,11 +344,9 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
   const [openTs, setOpenTs] = useState<number | null>(null)
 
   // ---- 1.4.0 新增派生数据 ----
-  /** 活动柱图:最近 24 次注入(时间升序),高=字节,色=项目色 */
+  /** 活动柱图:最近 24 次注入(时间升序),高=字节,全柱品牌蓝+latest 强调 */
   const activity = stats.timeline.slice(-24)
   const maxActivityBytes = activity.reduce((max, e) => Math.max(max, e.bytes), 0)
-  const colorByCwd = new Map<string, string>()
-  projects.forEach((project, index) => colorByCwd.set(project.cwd, PROJECT_COLORS[index % PROJECT_COLORS.length]))
   /** 作用域分布:按注入次数加权的 user/project/both/missing 份额 */
   const scopeShare = new Map<Scope | 'missing', number>()
   for (const m of stats.memories) {
@@ -357,7 +402,8 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
     </div>
   )
 
-  /** 分布条一段(seg):份额 >12% 才放行内数字,窄段只留 hover title。 */
+  /** 分布条一段(seg):纯色块,宽度=份额;百分比写在图例行(段内白字在浅色
+   段上对比度不足,实测叠字看不清——1.5.0 审查后用户实测反馈)。 */
   const distSeg = (key: string, kind: 'scope' | 'type', value: number, colorHint: string, label: string): ReactNode => {
     const pct = (value / (kind === 'scope' ? scopeTotal : typeTotal)) * 100
     if (pct <= 0) return null
@@ -369,28 +415,25 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
         data-type={kind === 'type' ? key : undefined}
         style={{ width: `${pct}%` }}
         title={`${label}: ${value} (${Math.round(pct)}%)${colorHint.length > 0 ? '' : ''}`}
-      >
-        {pct >= 14 ? <b>{Math.round(pct)}%</b> : null}
-      </span>
+      />
     )
   }
 
   return (
-    <details className="dam-stats">
-      <summary>
-        <span className="dam-stats-glyph" aria-hidden="true">📊</span>
+    <section className="dam-stats">
+      <header className="dam-stats-head">
+        <span className="dam-stats-glyph" aria-hidden="true"><Icon name="chart" size={15} /></span>
         <span className="dam-stats-titles">
           <span className="dam-stats-title">{t('statsTitle')}</span>
           <span className="dam-stats-sub">
             {stats.sessions} {t('statsSessions')} · {stats.injections} {t('statsInjections')} · {t('statsAvg')} {(avgBytes / 1024).toFixed(1)}K
           </span>
         </span>
-        <span className="dam-stats-chev" aria-hidden="true">›</span>
-      </summary>
+      </header>
 
       <div className="dam-stats-body">
         {/* 指标条:四格(会话/注入/均段/截断) */}
-        <div className="dam-metrics" style={{ gridTemplateColumns: 'repeat(4,minmax(0,1fr))' }}>
+        <div className="dam-metrics">
           <div className="dam-metric"><b>{stats.sessions}</b><span>{t('statsSessions')}</span></div>
           <div className="dam-metric"><b>{stats.injections}</b><span>{t('statsInjections')}</span></div>
           <div className="dam-metric"><b>{(avgBytes / 1024).toFixed(1)}K</b><span>{t('statsAvg')}</span></div>
@@ -411,7 +454,6 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
                 <div className="dam-chart-grid" aria-hidden="true"><i /><i /><i /></div>
                 {activity.map((entry, index) => {
                   const height = maxActivityBytes === 0 ? 4 : Math.max(6, Math.round((entry.bytes / maxActivityBytes) * 100))
-                  const color = colorByCwd.get(entry.cwd)
                   const isLatest = index === activity.length - 1
                   const label = (entry.cwd.split(/[\\/]/).pop() ?? entry.cwd) || '—'
                   return (
@@ -419,7 +461,7 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
                       key={`${entry.sessionId}-${entry.ts}`}
                       className="dam-chart-bar"
                       data-latest={isLatest ? '1' : '0'}
-                      style={{ height: `${height}%`, ...(color !== undefined && !isLatest ? { background: color, opacity: 0.7 } : {}) }}
+                      style={{ height: `${height}%` }}
                       title={`${label} · ${(entry.bytes / 1024).toFixed(1)}K · ${entry.count}${t('statsMemories')}${entry.truncated > 0 ? ` · ⚠${entry.truncated}` : ''}\n${new Date(entry.ts).toLocaleString()}`}
                     />
                   )
@@ -451,7 +493,7 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
                     .sort((a, b) => b[1] - a[1])
                     .map(([key, value]) => (
                       <span key={key} className="dam-legend-item">
-                        <span className="dam-scope-dot" data-scope={key} />{scopeLabel(key === 'missing' ? undefined : key)} {value}
+                        <span className="dam-scope-dot" data-scope={key} />{scopeLabel(key === 'missing' ? undefined : key)} {value} <i className="dam-legend-pct">{Math.round((value / scopeTotal) * 100)}%</i>
                       </span>
                     ))}
                 </div>
@@ -470,7 +512,7 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
                     .filter(type => (typeShare.get(type) ?? 0) > 0)
                     .map(type => (
                       <span key={type} className="dam-legend-item">
-                        <span className="dam-scope-dot" data-type={type} style={{ background: undefined }} />{type} {typeShare.get(type)}
+                        <span className="dam-scope-dot" data-type={type} style={{ background: undefined }} />{type} {typeShare.get(type)} <i className="dam-legend-pct">{Math.round(((typeShare.get(type) ?? 0) / typeTotal) * 100)}%</i>
                       </span>
                     ))}
                 </div>
@@ -512,7 +554,7 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
               <span>{t('statsProjectAvg')}</span>
               <span />
             </div>
-            {projects.map((project, index) => {
+            {projects.map(project => {
               const label = project.cwd.split(/[\\/]/).pop() || project.cwd
               const width = maxProjectInjections === 0 ? 0 : Math.min(100, (project.injections / maxProjectInjections) * 100)
               return (
@@ -525,10 +567,7 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
                   <span className="dam-proj-stat">{project.sessions}</span>
                   <span className="dam-proj-stat">{project.injections}</span>
                   <span className="dam-proj-bar">
-                    <i style={{
-                      width: `${width}%`,
-                      background: PROJECT_COLORS[index % PROJECT_COLORS.length],
-                    }} />
+                    <i style={{ width: `${width}%` }} />
                   </span>
                   <span className="dam-proj-stat">{(project.avgBytes / 1024).toFixed(1)}K</span>
                   <span className="dam-proj-warn">{project.truncated > 0 ? `⚠ ${project.truncated}` : ''}</span>
@@ -594,12 +633,12 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
           </div>
         </div>
       </div>
-    </details>
+    </section>
   )
 }
 
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
-export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents, configGet, configSet }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   /** 索引净预算(host 扣掉写入指导/协议壳后返回;旧宿主缺失时回退 maxBytes)。 */
@@ -621,11 +660,21 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const [deletingName, setDeletingName] = useState<string | null>(null)
   /** #19 谱系跳转:待滚动到的记忆名(设置后清筛选+展开组,由 effect 完成滚动)。 */
   const [jumpTarget, setJumpTarget] = useState<string | null>(null)
+  /**
+   * 1.5.0 tab 导航:记忆(默认,C 位)/ 洞察(统计+召回)/ 体检 / 设置。
+   * 旧宿主降级:对应数据源缺失的 tab 不渲染;三者全缺时 tab 行整体消失,
+   * 面板退化为纯列表形态(与 1.4.x 一致)。
+   */
+  const [tab, setTab] = useState<'memories' | 'insights' | 'health' | 'settings'>('memories')
+  /** 跨 tab 跳转的强制重触发计数(切 tab 不改变 visibleGroups 引用,effect 不会重跑)。 */
+  const [jumpNonce, setJumpNonce] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   /** 注入审计统计(0.9.0;取不到时静默无统计区——审计绝不影响面板可用性)。 */
   const [stats, setStats] = useState<AuditStatsFace | null>(null)
   /** 记忆体检(1.0.0;旧宿主无路由时 null → 体检区不显示)。 */
   const [health, setHealth] = useState<HealthReportFace | null>(null)
+  /** 设置中心(1.4.0;旧宿主无路由时 null → 设置卡不显示)。 */
+  const [settings, setSettings] = useState<SettingsFace | null>(null)
   /** Claude 可同步条数(watcher 透传;undefined = 旧宿主/未扫描,不显示提示)。 */
   const [claudePending, setClaudePending] = useState<number | undefined>(undefined)
   /** 导出 AGENTS.md 的成功提示(导出桥 1.2.0)。 */
@@ -650,25 +699,36 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       setError(true)
     }
     // 三路并行(审查 minor:串行时大库每次操作双倍全扫延迟)
-    const [statsRes, healthRes] = await Promise.allSettled([auditStats(), healthReport()])
+    const [statsRes, healthRes, settingsRes] = await Promise.allSettled([auditStats(), healthReport(), configGet()])
     if (statsRes.status === 'fulfilled') setStats(statsRes.value)
     if (healthRes.status === 'fulfilled') setHealth(healthRes.value)
-  }, [list, auditStats, healthReport])
+    if (settingsRes.status === 'fulfilled') setSettings(settingsRes.value)
+  }, [list, auditStats, healthReport, configGet])
 
   useEffect(() => { void load() }, [load])
 
   /**
-   * #19 谱系跳转:清筛选 + 展开目标所在组后滚动到卡片。
+   * #19 谱系/体检行跳转:清筛选 + **显式展开目标所在组** + 滚动到卡片。
+   * 1.5.0 审查修复(major):不能 setClosedGroups({}) 清空——非当前工作区的项目组
+   * 回落默认折叠,卡片不在 DOM,滚动落空且 visibleGroups 引用不变导致 effect
+   * 永不重试;改为只把目标组置为展开(其余组保持用户当前展开态)。
    * 由 effect 驱动(组展开与筛选清空是异步重渲染,同步 scrollIntoView 找不到
    * 节点);滚动+高亮后清除目标防重复触发。找不到目标(dangling 后继)静默 no-op。
-   * 注:依赖 visibleGroups 的引用变化触发重试(组展开后卡片才存在);
-   * 插在 visibleGroups 声明之后。
    */
   const jumpTo = (name: string): void => {
     setFilter('')
     setScopeFilter('all')
     setTypeFilter('all')
-    setClosedGroups({})
+    // 显式展开含目标记忆的全部组(跨层同名时两层都展开)
+    setClosedGroups(previous => {
+      const next = { ...previous }
+      for (const g of groups ?? []) {
+        if (g.memories.some(m => m.name === name)) next[g.key] = false
+      }
+      return next
+    })
+    setTab('memories') // 体检/谱系跨 tab 跳转:先回到记忆页
+    setJumpNonce(n => n + 1) // 强制滚动 effect 重跑(切 tab 不触发 visibleGroups 引用变化)
     setJumpTarget(name)
   }
 
@@ -704,6 +764,12 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       .filter(group => group.memories.length > 0 || (!filtering && group.indexText != null))
   }, [groups, needle, scopeFilter, typeFilter])
 
+  /** 面板滚动容器 ref(切 tab 时复位滚动位置,审查 minor 修复)。 */
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  /** 切 tab 复位面板滚动(内容高度不同,旧位置会被钳制成"半路");声明在跳转 effect 之前——jumpTo 同批切 tab 时先复位再 scrollIntoView 目标。 */
+  useEffect(() => { rootRef.current?.scrollTo({ top: 0 }) }, [tab])
+
   // #19 谱系跳转的滚动 effect:依赖 visibleGroups 的引用变化(组展开/筛选
   // 清空触发重渲染后卡片才存在);找到即滚动+闪烁高亮,找不到静默(dangling)
   useEffect(() => {
@@ -716,11 +782,15 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       : []).find(el => el !== null)
     if (element === undefined) return
     element.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // 焦点随行(审查 minor 修复):点击方(体检行)已随 tab 隐藏失焦——把焦点
+    // 移到目标卡,键盘用户不落回 body;tabindex 动态补,一次性属性
+    element.setAttribute('tabindex', '-1')
+    element.focus({ preventScroll: true })
     element.classList.add('dam-lineage-hit')
     window.setTimeout(() => { element.classList.remove('dam-lineage-hit') }, 1600)
     setJumpTarget(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleGroups 引用变化即重试
-  }, [jumpTarget, visibleGroups, groups])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleGroups 引用变化/跨 tab nonce 均需重试
+  }, [jumpTarget, jumpNonce, tab, visibleGroups, groups])
 
   /** 类型 chips 的计数:按作用域过滤后的全集统计(与类型筛选无关)。 */
   const typeCounts = useMemo(() => {
@@ -875,7 +945,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
           aria-expanded={!collapsed}
           onClick={() => { setClosedGroups(previous => ({ ...previous, [group.key]: !collapsed })) }}
         >
-          <span className="dam-group-icon" aria-hidden="true">{group.scope === 'user' ? '👤' : '📁'}</span>
+          <span className="dam-group-icon" aria-hidden="true"><Icon name={group.scope === 'user' ? 'user' : 'folder'} size={14} /></span>
           <span className="dam-group-name">
             <span className="dam-group-title" title={group.slug}>
               {group.scope === 'user' ? t('userScopeShort') : projectLabel}
@@ -888,9 +958,9 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
           </span>
           <span className="dam-group-meta">
             {shownCount < totalInGroup ? `${shownCount} / ${totalInGroup}` : String(shownCount)} {t('overviewMemories')}
-            {pinnedCount > 0 && <> · 📌 {pinnedCount}</>}
-            {mutedCount > 0 && <> · 🔇 {mutedCount}</>}
-            {staleCount > 0 && <> · ⏳ {staleCount}</>}
+            {pinnedCount > 0 && <> · <Icon name="pin" size={10} /> {pinnedCount}</>}
+            {mutedCount > 0 && <> · <Icon name="mute" size={10} /> {mutedCount}</>}
+            {staleCount > 0 && <> · <Icon name="clock" size={10} /> {staleCount}</>}
           </span>
           <span className="dam-chevron" aria-hidden="true"><Icon name="chevron" size={12} /></span>
         </button>
@@ -968,7 +1038,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                           <span className="dam-badge dam-badge--ok" title={t('importedBadge')}>Claude</span>
                         )}
                         <span className="dam-memory-title">{memory.title ?? memory.name}</span>
-                        {memory.pinned && <span className="dam-memory-pin" title={t('pinned')}>📌</span>}
+                        {memory.pinned && <span className="dam-memory-pin" title={t('pinned')}><Icon name="pin" size={11} /></span>}
                         {memory.disabled && <span className="dam-badge dam-badge--muted">{t('mutedShort')}</span>}
                         {memory.stale && !memory.disabled && <span className="dam-badge dam-badge--warn">{t('staleShort')}</span>}
                         {memory.status === 'candidate' && <span className="dam-badge dam-badge--cand" title={t('statusTipCandidate')}>? {t('statusCandidate')}</span>}
@@ -1099,13 +1169,65 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const userGroups = visibleGroups?.filter((g: PanelGroup) => g.scope === 'user') ?? []
   const projectGroups = visibleGroups?.filter((g: PanelGroup) => g.scope !== 'user') ?? []
 
+  // ---- 1.5.0 tab 可见性(旧宿主降级矩阵):数据源缺失的 tab 不渲染 ----
+  const showInsights = stats !== null && stats.injections > 0
+  const healthIssueCount = health === null
+    ? 0
+    : health.unverified.length + health.zombies.length + health.conflicts.length
+  const showHealth = health !== null && healthIssueCount > 0
+  const showSettings = settings !== null
+  const showTabBar = showInsights || showHealth || showSettings
+  // 活动页数据消失(体检清零/旧宿主)时渲染期回落,避免停在空白 tab
+  const activeTab = tab === 'insights' && !showInsights
+    ? 'memories'
+    : tab === 'health' && !showHealth
+      ? 'memories'
+      : tab === 'settings' && !showSettings
+        ? 'memories'
+        : tab
+
+  /**
+   * 打开 Claude 导入弹层(头部按钮/提示条/空状态三处共用一个入口;
+   * 1.5.0 消灭旧版"提示条按钮 querySelector 转发点击头部按钮"的 hack)。
+   */
+  const openImporter = (): void => {
+    if (busy || importer !== null || editing !== null) return
+    const seq = ++importSeq.current
+    setImporter({ phase: 'loading' })
+    void importScan()
+      .then(scan => {
+        if (seq !== importSeq.current) return // 弹层已关闭:丢弃迟到响应
+        if (scan.found && scan.projects.length > 0) {
+          // 默认全选:未导入=待导入,已导入=保留;取消勾选才是"撤销"
+          const selected: Record<string, boolean> = {}
+          for (const p of scan.projects) {
+            for (const f of p.files) selected[importKey(p.slug, f.file)] = true
+          }
+          setImporter({ phase: 'select', projects: scan.projects, selected, allToUser: false })
+        } else {
+          setImporter({ phase: 'empty' })
+        }
+      })
+      .catch(() => {
+        if (seq !== importSeq.current) return
+        setImporter({ phase: 'failed' })
+      })
+  }
+
   return (
-    <div className="dam-root">
+    <div className="dam-root" ref={rootRef}>
       <div className="dam-shell">
+      {/* 顶条(1.5.0):标题一行(intro 收进 title 提示)+ 全局动作 */}
       <header className="dam-header">
         <div className="dam-heading">
-          <h2 className="dam-title">{t('title')}</h2>
-          <p className="dam-intro">{t('intro')}</p>
+          <h2 className="dam-title" title={t('intro')}>{t('title')}</h2>
+        </div>
+        <div className="dam-header-side">
+          {/* 索引占用(全局信号,常驻——旧宿主降级无 tab 行时也可见,审查 minor 修复) */}
+          <span className="dam-usage" title={`${t('budget')} ${formatBytes(maxBytes)}`}>
+            <span className="dam-usage-label">{t('indexUsage')} {Math.round(totalUsage * 100)}% · {formatBytes(injectedBytes)}/{formatBytes(budgetBytes)}</span>
+            <span className="dam-usage-track"><i data-hot={totalUsage > 0.8 ? '1' : '0'} style={{ width: `${Math.min(100, totalUsage * 100)}%` }} /></span>
+          </span>
         </div>
         <div className="dam-header-actions">
           {/* 反向导出桥(1.2.0):信任态记忆 → AGENTS.md 片段,复制到剪贴板 */}
@@ -1114,138 +1236,175 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
             className="dam-btn dam-btn-ghost"
             disabled={busy}
             title={t('exportTip')}
+            aria-label={t('exportAction')}
             onClick={() => {
               void exportAgents()
                 .then(res => navigator.clipboard.writeText(res.content))
                 .then(() => { setActionError(null); setExportNote(t('exportDone')) })
                 .catch(() => { setExportNote(null); setActionError(t('exportFailed')) })
             }}
-          >⬇ {t('exportAction')}</button>
-          <button type="button" className="dam-btn dam-btn-ghost" onClick={() => { void load() }} disabled={busy}>
-            <Icon name="refresh" /> {t('refresh')}
+          ><Icon name="upload" size={13} /></button>
+          <button type="button" className="dam-btn dam-btn-ghost" onClick={() => { void load() }} disabled={busy} aria-label={t('refresh')} title={t('refresh')}>
+            <Icon name="refresh" size={13} />
           </button>
           <button
             type="button"
             className="dam-btn dam-btn-primary"
             disabled={busy || importer !== null || editing !== null}
-            onClick={() => {
-              const seq = ++importSeq.current
-              setImporter({ phase: 'loading' })
-              void importScan()
-                .then(scan => {
-                  if (seq !== importSeq.current) return // 弹层已关闭:丢弃迟到响应
-                  if (scan.found && scan.projects.length > 0) {
-                    // 默认全选:未导入=待导入,已导入=保留;取消勾选才是"撤销"
-                    const selected: Record<string, boolean> = {}
-                    for (const p of scan.projects) {
-                      for (const f of p.files) selected[importKey(p.slug, f.file)] = true
-                    }
-                    setImporter({ phase: 'select', projects: scan.projects, selected, allToUser: false })
-                  } else {
-                    setImporter({ phase: 'empty' })
-                  }
-                })
-                .catch(() => {
-                  if (seq !== importSeq.current) return
-                  setImporter({ phase: 'failed' })
-                })
-            }}
+            onClick={openImporter}
           >
-            <Icon name="download" /> {t('importBtn')}
+            <Icon name="download" size={13} /> {t('importBtn')}
           </button>
         </div>
       </header>
 
+      {/* tab 导航 + 右侧全局信号(索引占用;下划线式与列表级 segment 区分)。
+          至少一个可选 tab 才渲染,否则退化为纯列表(最旧宿主) */}
+      {showTabBar && (
+        <nav className="dam-tabs" role="tablist">
+          <button type="button" role="tab" aria-selected={activeTab === 'memories'} className="dam-tab" data-on={activeTab === 'memories' ? '1' : '0'} onClick={() => { setTab('memories') }}>
+            {t('tabMemories')} <span className="dam-tab-count">{String(total)}</span>
+          </button>
+          {showInsights && (
+            <button type="button" role="tab" aria-selected={activeTab === 'insights'} className="dam-tab" data-on={activeTab === 'insights' ? '1' : '0'} onClick={() => { setTab('insights') }}>
+              {t('tabInsights')}
+            </button>
+          )}
+          {showHealth && (
+            <button type="button" role="tab" aria-selected={activeTab === 'health'} className="dam-tab" data-on={activeTab === 'health' ? '1' : '0'} onClick={() => { setTab('health') }}>
+              {t('tabHealth')} <span className="dam-tab-count dam-tab-count--alert">{String(healthIssueCount)}</span>
+            </button>
+          )}
+          {showSettings && (
+            <button type="button" role="tab" aria-selected={activeTab === 'settings'} className="dam-tab" data-on={activeTab === 'settings' ? '1' : '0'} onClick={() => { setTab('settings') }}>
+              {t('settingsTitle')}
+            </button>
+          )}
+        </nav>
+      )}
+
       {/* 导入提示条(watcher 透传:Claude 目录有可同步记忆且尚未打开过导入时) */}
       {claudePending !== undefined && claudePending > 0 && importer === null && (
         <div className="dam-import-hint">
-          <span>📥 {t('importHint', { n: claudePending })}</span>
-          <button type="button" className="dam-btn" onClick={() => {
-            const btn = document.querySelector<HTMLButtonElement>('.dam-header-actions .dam-btn-primary')
-            btn?.click()
-          }}>{t('healthView')}</button>
+          <span><Icon name="download" size={12} /> {t('importHint', { n: claudePending })}</span>
+          <button type="button" className="dam-btn" onClick={openImporter}>{t('healthView')}</button>
         </div>
       )}
       {exportNote !== null && <div className="dam-export-note">✓ {exportNote}</div>}
+      {actionError !== null && <div className="dam-err dam-banner">{actionError}</div>}
 
-      <div className="dam-overview">
-        <span className="dam-stat"><b>{filtering ? `${String(visibleCount)} / ${String(total)}` : String(total)}</b> {t('overviewMemories')}</span>
-        <span className="dam-stat"><b>{totalPinned}</b> {t('overviewPinned')}</span>
-        <span className="dam-stat"><b>{totalMuted}</b> {t('overviewMuted')}</span>
-        {totalStale > 0 && <span className="dam-stat"><b>{totalStale}</b> {t('overviewStale')}</span>}
-        <span className="dam-usage" title={`${t('budget')} ${formatBytes(maxBytes)}`}>
-          <span className="dam-usage-label">{t('indexUsage')} {Math.round(totalUsage * 100)}% · {formatBytes(injectedBytes)} / {formatBytes(budgetBytes)}</span>
-          <span className="dam-usage-track"><i data-hot={totalUsage > 0.8 ? '1' : '0'} style={{ width: `${Math.min(100, totalUsage * 100)}%` }} /></span>
-        </span>
+      {/*
+        1.5.0 审查修复(minor):tab 面板常挂载 + CSS 隐藏(而非条件卸载)——
+        切 tab 往返不丢 MemoryEditor 未保存正文/SettingsCard 滑块草稿/
+        StatsSection 展开态,滚动位置也随 DOM 保留。
+      */}
+      <div className="dam-tabpane" data-on={activeTab === 'memories' ? '1' : '0'}>
+          <div className="dam-toolbar">
+            <div className="dam-search">
+              <span className="dam-search-icon"><Icon name="search" size={13} /></span>
+              <input
+                value={filter}
+                placeholder={t('searchPlaceholder')}
+                aria-label={t('searchPlaceholder')}
+                onChange={event => { setFilter(event.target.value) }}
+              />
+              {filter.trim().length > 0 && (
+                <button type="button" className="dam-search-clear" title={t('clearFilters')} aria-label={t('clearFilters')} onClick={() => { setFilter('') }}>
+                  <Icon name="close" size={11} />
+                </button>
+              )}
+            </div>
+            <div className="dam-segment" role="group" aria-label={t('overviewMemories')}>
+              {([['all', t('allScopes'), total], ['user', t('userScopeShort'), userCount], ['project', t('projectScope'), projectCount]] as const).map(([key, label, count]) => (
+                <button
+                  type="button"
+                  key={key}
+                  data-on={scopeFilter === key ? '1' : '0'}
+                  onClick={() => { setScopeFilter(key) }}
+                >{label} <span>{count}</span></button>
+              ))}
+            </div>
+            <select
+              className="dam-select"
+              aria-label={t('allTypes')}
+              value={typeFilter}
+              onChange={event => { setTypeFilter(event.target.value) }}
+            >
+              <option value="all">{t('allTypes')} · {total}</option>
+              {TYPE_ORDER.map(type => (
+                <option key={type} value={type}>{type} · {typeCounts[type] ?? 0}</option>
+              ))}
+            </select>
+            {filtering && (
+              <button
+                type="button"
+                className="dam-btn dam-btn-ghost"
+                onClick={() => { setFilter(''); setScopeFilter('all'); setTypeFilter('all') }}
+              >{t('clearFilters')}</button>
+            )}
+          </div>
+
+          {/* 状态芯片行:概览三计数(零值隐藏,全零整行不渲染) */}
+          {(totalPinned > 0 || totalMuted > 0 || totalStale > 0) && (
+            <div className="dam-chips">
+              {totalPinned > 0 && <span className="dam-chip"><Icon name="pin" size={11} /> {totalPinned} {t('overviewPinned')}</span>}
+              {totalMuted > 0 && <span className="dam-chip"><Icon name="mute" size={11} /> {totalMuted} {t('overviewMuted')}</span>}
+              {totalStale > 0 && <span className="dam-chip"><Icon name="clock" size={11} /> {totalStale} {t('overviewStale')}</span>}
+              {filtering && <span className="dam-chip dam-chip--filter">{t('showingOf', { shown: visibleCount, total })}</span>}
+            </div>
+          )}
+
+          {total === 0 && (
+            <div className="dam-empty">
+              <span className="dam-empty-icon" aria-hidden="true">🧠</span>
+              <h3>{t('emptyTitle')}</h3>
+              <p>{t('emptyStep1')}</p>
+              <p className="dam-note">{t('emptyStep2')} · {t('emptyStep3')}</p>
+              <button type="button" className="dam-btn dam-btn-primary" disabled={busy || importer !== null || editing !== null} onClick={openImporter}>
+                <Icon name="download" size={13} /> {t('importBtn')}
+              </button>
+            </div>
+          )}
+
+          <div className="dam-groups">
+            {userGroups.map(renderGroup)}
+            {projectGroups.map(renderGroup)}
+          </div>
+
+          {total > 0 && (visibleGroups?.length ?? 0) === 0 && <p className="dam-note">{t('noSearchHits')}</p>}
       </div>
 
-      <div className="dam-toolbar">
-        <div className="dam-search">
-          <span className="dam-search-icon"><Icon name="search" size={13} /></span>
-          <input
-            value={filter}
-            placeholder={t('searchPlaceholder')}
-            aria-label={t('searchPlaceholder')}
-            onChange={event => { setFilter(event.target.value) }}
-          />
-          {filter.trim().length > 0 && (
-            <button type="button" className="dam-search-clear" title={t('clearFilters')} aria-label={t('clearFilters')} onClick={() => { setFilter('') }}>
-              <Icon name="close" size={11} />
-            </button>
-          )}
-        </div>
-        <div className="dam-segment" role="group" aria-label={t('overviewMemories')}>
-          {([['all', t('allScopes'), total], ['user', t('userScopeShort'), userCount], ['project', t('projectScope'), projectCount]] as const).map(([key, label, count]) => (
-            <button
-              type="button"
-              key={key}
-              data-on={scopeFilter === key ? '1' : '0'}
-              onClick={() => { setScopeFilter(key) }}
-            >{label} <span>{count}</span></button>
-          ))}
-        </div>
-        <select
-          className="dam-select"
-          aria-label={t('allTypes')}
-          value={typeFilter}
-          onChange={event => { setTypeFilter(event.target.value) }}
-        >
-          <option value="all">{t('allTypes')} · {total}</option>
-          {TYPE_ORDER.map(type => (
-            <option key={type} value={type}>{type} · {typeCounts[type] ?? 0}</option>
-          ))}
-        </select>
-        {filtering && (
-          <button
-            type="button"
-            className="dam-btn dam-btn-ghost"
-            onClick={() => { setFilter(''); setScopeFilter('all'); setTypeFilter('all') }}
-          >{t('clearFilters')}</button>
+      <div className="dam-tabpane" data-on={activeTab === 'insights' ? '1' : '0'}>
+        {stats !== null && (
+          <div className="dam-insights">
+            <StatsSection stats={stats} t={t} now={now} groups={groups} />
+            {groups !== null && <RecallSection stats={stats} groups={groups} t={t} />}
+          </div>
         )}
       </div>
 
-      {actionError !== null && <div className="dam-err dam-banner">{actionError}</div>}
-
-      {total === 0 && (
-        <div className="dam-empty">
-          <span className="dam-empty-icon" aria-hidden="true">🧠</span>
-          <h3>{t('emptyTitle')}</h3>
-          <p>{t('emptyStep1')}</p>
-          <p className="dam-note">{t('emptyStep2')} · {t('emptyStep3')}</p>
-        </div>
-      )}
-
-      {stats !== null && stats.injections > 0 && <StatsSection stats={stats} t={t} now={now} groups={groups} />}
-      {health !== null && (health.unverified.length > 0 || health.zombies.length > 0 || health.conflicts.length > 0) && (
-        <HealthSection health={health} t={t} />
-      )}
-
-      <div className="dam-groups">
-        {userGroups.map(renderGroup)}
-        {projectGroups.map(renderGroup)}
+      <div className="dam-tabpane" data-on={activeTab === 'health' ? '1' : '0'}>
+        {health !== null && showHealth && (
+          <HealthSection health={health} t={t} onLocate={jumpTo} />
+        )}
       </div>
 
-      {total > 0 && (visibleGroups?.length ?? 0) === 0 && <p className="dam-note">{t('noSearchHits')}</p>}
+      <div className="dam-tabpane" data-on={activeTab === 'settings' ? '1' : '0'}>
+        {settings !== null && (
+          <SettingsCard
+            t={t}
+            settings={settings}
+            avgRowBytes={groups !== null && groups.length > 0
+              ? Math.max(24, Math.round(groups.reduce((s, g) => s + g.indexBytes, 0) / Math.max(1, groups.reduce((s, g) => s + g.memories.length, 0))))
+              : 96}
+            onSaved={async () => {
+              try { setSettings(await configGet()) } catch { /* 保持现值 */ }
+              await load()
+            }}
+            configSet={configSet}
+          />
+        )}
+      </div>
 
       {importer !== null && (
         <div
@@ -1494,5 +1653,276 @@ function ImportDialog({ t, state, onClose, onToggleProject, onToggleFile, onAllT
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * 召回排行 + 注入→召回漏斗(1.4.0)。
+ * reads 来自 store(memory_read 计数 + 搜索命中 top-3),injectedCount 来自
+ * 注入审计——两榜对照即漏斗:注入多而零召回 = 占预算;注入少而常召回 = 被埋没。
+ */
+function RecallSection({ stats, groups, t }: { stats: AuditStatsFace; groups: PanelGroup[]; t: Translate }): ReactNode {
+  /** name → {reads(跨层求和), scope(取首个出现层)};再并上注入次数。 */
+  const readsByName = new Map<string, { reads: number; scope: string }>()
+  for (const group of groups) {
+    for (const memory of group.memories) {
+      const hit = readsByName.get(memory.name)
+      if (hit === undefined) readsByName.set(memory.name, { reads: memory.reads, scope: group.scope })
+      else hit.reads += memory.reads
+    }
+  }
+  const injectedByName = new Map(stats.memories.map(m => [m.name, m.injectedCount]))
+  const rows = [...readsByName.entries()]
+    .map(([name, info]) => ({ name, reads: info.reads, injected: injectedByName.get(name) ?? 0, scope: info.scope }))
+  const topRecall = [...rows].sort((a, b) => b.reads - a.reads || b.injected - a.injected).slice(0, 8)
+  const maxReads = Math.max(1, ...rows.map(r => r.reads))
+  const maxInj = Math.max(1, ...rows.map(r => r.injected))
+  // 漏斗四象限:注入 ≥ 半数事件 且 reads ≥ 2 视为活跃(经验阈值)
+  const injActive = (r: { injected: number }) => r.injected >= Math.max(2, stats.injections * 0.5)
+  const readActive = (r: { reads: number }) => r.reads >= 2
+  const hh = rows.filter(r => injActive(r) && readActive(r))
+  const hz = rows.filter(r => injActive(r) && !readActive(r)).sort((a, b) => b.injected - a.injected)
+  const lh = rows.filter(r => !injActive(r) && readActive(r)).sort((a, b) => b.reads - a.reads)
+  const ll = rows.filter(r => !injActive(r) && !readActive(r))
+
+  /** 双条行:上条=注入(蓝) 下条=召回(绿),宽度各按自身最大值归一;顶部图例标注。 */
+  const dualRow = (row: { name: string; reads: number; injected: number; scope: string }): ReactNode => (
+    <div key={row.name} className="dam-recall-row">
+      <code className="dam-rank-name" title={row.name}>{row.name}</code>
+      <span className="dam-dualbar" title={`inj ${String(row.injected)} · reads ${String(row.reads)}`}>
+        <i style={{ width: `${Math.round((row.injected / maxInj) * 100)}%` }} />
+        <em style={{ width: `${Math.round((row.reads / maxReads) * 100)}%` }} />
+      </span>
+      <span className="dam-ratio">{row.reads}/{row.injected}</span>
+    </div>
+  )
+
+  /** 双条图例(可见,不只靠 hover):● 注入 ● 召回 + 比率含义 */
+  const dualLegend = (
+    <div className="dam-legend dam-legend--dual">
+      <span className="dam-legend-item"><i className="dam-dot dam-dot--inj" />{t('legendInj')}</span>
+      <span className="dam-legend-item"><i className="dam-dot dam-dot--rec" />{t('legendRec')}</span>
+      <span className="dam-legend-item dam-ratio-hint">{t('legendRatio')}</span>
+    </div>
+  )
+
+  const quadrant = (label: string, count: number, tone: string): ReactNode => (
+    <div key={label} className={`dam-quad dam-quad--${tone}`}>
+      <b>{String(count)}</b>
+      <span>{label}</span>
+    </div>
+  )
+
+  return (
+    <section className="dam-stats">
+      <header className="dam-stats-head">
+        <span className="dam-stats-glyph" aria-hidden="true"><Icon name="target" size={15} /></span>
+        <span className="dam-stats-titles">
+          <span className="dam-stats-title">{t('recallTitle')}</span>
+          <span className="dam-stats-sub">{t('recallHint')}</span>
+        </span>
+      </header>
+      <div className="dam-stats-body">
+        {dualLegend}
+        {/* 漏斗阈值在注入样本 <4 时结构性失效(阈值≥2 永不可达 → 全部落
+            LH/LL 假象)——样本不足时隐藏象限区与行动建议,只留召回榜 */}
+        {stats.injections >= 4 && (
+          <div className="dam-duo">
+            <div className="dam-block">
+              <p className="dam-section" style={{ margin: 0 }}>{t('funnelTitle')}</p>
+              <div className="dam-quad-grid-inner">
+                {quadrant(t('funnelQuadHH'), hh.length, 'ok')}
+                {quadrant(t('funnelQuadHZ'), hz.length, 'warn')}
+                {quadrant(t('funnelQuadLH'), lh.length, 'info')}
+                {quadrant(t('funnelQuadLL'), ll.length, 'muted')}
+              </div>
+            </div>
+            <div className="dam-block">
+              <p className="dam-section" style={{ margin: 0 }}>{t('recallTop')}</p>
+              {topRecall.length > 0 ? topRecall.map(dualRow) : <p className="dam-note">{t('healthNone')}</p>}
+            </div>
+          </div>
+        )}
+        {stats.injections < 4 && (
+          <div className="dam-block">
+            <p className="dam-section" style={{ margin: 0 }}>{t('recallTop')}</p>
+            {topRecall.length > 0 ? topRecall.map(dualRow) : <p className="dam-note">{t('healthNone')}</p>}
+          </div>
+        )}
+        {stats.injections >= 4 && hz.length > 0 && (
+          <div className="dam-block">
+            <p className="dam-section">{t('funnelQuadHZ')} · {t('funnelSuggestMute')}</p>
+            {hz.slice(0, 5).map(dualRow)}
+          </div>
+        )}
+        {stats.injections >= 4 && lh.length > 0 && (
+          <div className="dam-block">
+            <p className="dam-section">{t('funnelQuadLH')} · {t('funnelSuggestPin')}</p>
+            {lh.slice(0, 5).map(dualRow)}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * 设置中心卡(1.4.0):预设一键切换 + 白名单字段滑块/开关 + 来源徽章 +
+ * 保存(POST config.set,宿主原地改 live 配置,下一个请求生效)。
+ */
+function SettingsCard({ t, settings, avgRowBytes, onSaved, configSet }: {
+  t: Translate
+  settings: SettingsFace
+  /** 当前索引行均宽(字节)——预算滑块的「约可装 N 条」预览用。 */
+  avgRowBytes: number
+  onSaved: () => Promise<void>
+  configSet: (payload: Record<string, number | boolean | null>) => Promise<Response>
+}): ReactNode {
+  const effective = settings.effective
+  const [maxBytes, setMaxBytes] = useState(Number(effective.maxBytes))
+  const [minImportance, setMinImportance] = useState(Number(effective.minImportance))
+  const [staleDays, setStaleDays] = useState(Number(effective.staleAfterDays))
+  const [autoSummarize, setAutoSummarize] = useState(effective.autoSummarize === true)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  // 外部生效值变化(保存成功刷新/手动刷新/重置)后本地跟随——否则重置回
+  // profile 默认时,本地仍持旧值显示成"未保存的改动"
+  useEffect(() => {
+    setMaxBytes(Number(effective.maxBytes))
+    setMinImportance(Number(effective.minImportance))
+    setStaleDays(Number(effective.staleAfterDays))
+    setAutoSummarize(effective.autoSummarize === true)
+  }, [effective.maxBytes, effective.minImportance, effective.staleAfterDays, effective.autoSummarize])
+
+  const preset = maxBytes <= 4096 && minImportance >= 4 ? 'focus' : maxBytes >= 8192 && minImportance <= 1 ? 'companion' : ''
+  const fits = Math.max(1, Math.floor((maxBytes * 0.66) / avgRowBytes))
+
+  const srcBadge = (field: string): ReactNode => {
+    const source = settings.sources[field]
+    if (source === undefined) return null
+    return <span className={source === 'override' ? 'dam-src dam-src--own' : 'dam-src'}>{source === 'override' ? t('setSourceOverride') : t('setSourceProfile')}</span>
+  }
+
+  const send = (patch: Record<string, number | boolean | null>): void => {
+    setBusy(true)
+    setNote(null)
+    void configSet(patch)
+      .then(async response => {
+        if (!response.ok) throw new Error(String(response.status))
+        setNote(t('setSaved'))
+        await onSaved()
+      })
+      .catch(() => { setNote(t('setSaveFailed')) })
+      .finally(() => { setBusy(false) })
+  }
+
+  // 单字段重置:值传 null = 删覆盖回 profile 默认(后端 profileDefaults 恢复)
+  const resetField = (field: string): void => { send({ [field]: null }) }
+
+  const dirty = maxBytes !== Number(effective.maxBytes)
+    || minImportance !== Number(effective.minImportance)
+    || staleDays !== Number(effective.staleAfterDays)
+    || autoSummarize !== (effective.autoSummarize === true)
+
+  return (
+    <section className="dam-stats dam-settings">
+      <header className="dam-stats-head">
+        <span className="dam-stats-glyph" aria-hidden="true"><Icon name="gear" size={15} /></span>
+        <span className="dam-stats-titles">
+          <span className="dam-stats-title">{t('settingsTitle')}</span>
+          <span className="dam-stats-sub">{t('settingsIntro')}</span>
+        </span>
+      </header>
+      <div className="dam-stats-body">
+        {/* 预设:一键换档(专注=默认行为;陪伴=大预算低门槛) */}
+        <div className="dam-row" style={{ gap: '8px' }}>
+          <button
+            type="button"
+            className="dam-preset"
+            data-active={preset === 'focus' ? '1' : '0'}
+            disabled={busy}
+            title={t('presetFocusTip')}
+            onClick={() => {
+              setMaxBytes(4096)
+              setMinImportance(4)
+            }}
+          >{t('presetFocus')}{preset === 'focus' ? ` · ${t('presetActive')}` : ''}</button>
+          <button
+            type="button"
+            className="dam-preset"
+            data-active={preset === 'companion' ? '1' : '0'}
+            disabled={busy}
+            title={t('presetCompanionTip')}
+            onClick={() => {
+              setMaxBytes(16_384)
+              setMinImportance(1)
+            }}
+          >{t('presetCompanion')}{preset === 'companion' ? ` · ${t('presetActive')}` : ''}</button>
+        </div>
+
+        <div className="dam-ctrl">
+          <label>
+            <span className="dam-ctrl-head">{t('setMaxBytes')} {srcBadge('maxBytes')}
+              {settings.sources.maxBytes === 'override' && (
+                <button type="button" className="dam-reset" disabled={busy} aria-label={t('setResetField')} title={t('setResetField')} onClick={() => { resetField('maxBytes') }}>↺</button>
+              )}
+            </span>
+            <span className="dam-ctrl-val">{(maxBytes / 1024).toFixed(1)} KB</span>
+            <input type="range" min={1024} max={65536} step={512} value={maxBytes} onChange={e => { setMaxBytes(Number(e.target.value)) }} />
+            <span className="dam-ctrl-hint">{t('setMaxBytesHint')} · {t('setFits', { n: fits })}</span>
+          </label>
+        </div>
+        <div className="dam-ctrl">
+          <label>
+            <span className="dam-ctrl-head">{t('setMinImportance')} {srcBadge('minImportance')}
+              {settings.sources.minImportance === 'override' && (
+                <button type="button" className="dam-reset" disabled={busy} aria-label={t('setResetField')} title={t('setResetField')} onClick={() => { resetField('minImportance') }}>↺</button>
+              )}
+            </span>
+            <span className="dam-ctrl-val">{String(minImportance)}{minImportance === 0 ? ' (off)' : ''}</span>
+            <input type="range" min={0} max={10} step={1} value={minImportance} onChange={e => { setMinImportance(Number(e.target.value)) }} />
+            <span className="dam-ctrl-hint">{t('setMinImportanceHint')}</span>
+          </label>
+        </div>
+        <div className="dam-ctrl">
+          <label>
+            <span className="dam-ctrl-head">{t('setStaleDays')} {srcBadge('staleAfterDays')}
+              {settings.sources.staleAfterDays === 'override' && (
+                <button type="button" className="dam-reset" disabled={busy} aria-label={t('setResetField')} title={t('setResetField')} onClick={() => { resetField('staleAfterDays') }}>↺</button>
+              )}
+            </span>
+            <span className="dam-ctrl-val">{String(staleDays)}{staleDays === 0 ? ' (off)' : ' d'}</span>
+            <input type="range" min={0} max={3650} step={1} value={staleDays} onChange={e => { setStaleDays(Number(e.target.value)) }} />
+            <span className="dam-ctrl-hint">{t('setStaleDaysHint')}</span>
+          </label>
+        </div>
+        <div className="dam-ctrl dam-ctrl--toggle">
+          <label>
+            <span className="dam-ctrl-head">{t('setAutoSummarize')} {srcBadge('autoSummarize')}
+              {settings.sources.autoSummarize === 'override' && (
+                <button type="button" className="dam-reset" disabled={busy} aria-label={t('setResetField')} title={t('setResetField')} onClick={() => { resetField('autoSummarize') }}>↺</button>
+              )}
+            </span>
+            <input type="checkbox" className="dam-check" checked={autoSummarize} onChange={e => { setAutoSummarize(e.target.checked) }} />
+          </label>
+        </div>
+
+        <div className="dam-row">
+          <button type="button" className="dam-btn dam-btn-primary" disabled={busy || !dirty} onClick={() => {
+            // 只发真正改动的字段(审查 major 修复):全量发会把未动字段
+            // 固化成 override——来源徽章误标,profile 后续修改被旧值压死
+            const patch: Record<string, number | boolean | null> = {}
+            if (maxBytes !== Number(effective.maxBytes)) patch.maxBytes = maxBytes
+            if (minImportance !== Number(effective.minImportance)) patch.minImportance = minImportance
+            if (staleDays !== Number(effective.staleAfterDays)) patch.staleAfterDays = staleDays
+            if (autoSummarize !== (effective.autoSummarize === true)) patch.autoSummarize = autoSummarize
+            if (Object.keys(patch).length === 0) return
+            send(patch)
+          }}>{t('setSave')}</button>
+          {note !== null && <span className={note === t('setSaved') ? 'dam-ok' : 'dam-err'}>{note}</span>}
+        </div>
+      </div>
+    </section>
   )
 }

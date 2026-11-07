@@ -28,12 +28,13 @@ function parseExplicitScope(raw: string | undefined): MemoryScope | undefined {
 }
 
 /** 注册记忆工具。 */
-export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUserScope: boolean): void {
+/** 注册记忆工具。enableUserScope 传**可变配置对象**(1.4.0 设置中心热切换;读时求值)。 */
+export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { enableUserScope: boolean }): void {
   /** 当前部署可访问的作用域(user 层被配置禁用时从一切路径剔除)。 */
-  const availableScopes = (): readonly MemoryScope[] => enableUserScope ? ['user', 'project'] : ['project']
+  const availableScopes = (): readonly MemoryScope[] => config.enableUserScope ? ['user', 'project'] : ['project']
 
   const guardScope = (scope: MemoryScope): MemoryScope => {
-    if (scope === 'user' && !enableUserScope) {
+    if (scope === 'user' && !config.enableUserScope) {
       throw new Error("user scope is disabled by configuration (enableUserScope: false); use 'project'")
     }
     return scope
@@ -312,6 +313,11 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, enableUser
         .filter(m => m.score > 0)
         .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
         .slice(0, 8)
+      // 召回计数(1.4.0):搜索命中前 3 也算一次主动召回(与 memory_read 同一
+      // reads 口径)——best-effort,失败不影响返回(与 touch 既有纪律一致)
+      for (const match of matches.slice(0, 3)) {
+        void store.touch(match.name, match.scope as MemoryScope, cwd).catch(() => {})
+      }
       return { matches, query }
     },
     isConcurrencySafe: () => true,

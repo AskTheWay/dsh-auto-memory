@@ -20,6 +20,7 @@ import { MEMORY_SECTION, renderMemoryIndexText } from './prompt.ts'
 import { registerInjectionAudit } from './audit.ts'
 import { registerConsolidation } from './consolidate.ts'
 import { registerMemoryApi } from './memory-api.ts'
+import { loadSettings, applySettings, SETTABLE_FIELDS } from './settings.ts'
 
 export const name = 'dsh-auto-memory'
 export const inject = ['tools', 'systemPrompt']
@@ -57,47 +58,54 @@ export const Config: z<Config> = z.object({
 
 export function apply(ctx: Context, config: Config): void {
   // resolve 归一:相对路径的记忆根会随 dsh 启动目录漂移,静默破坏持久性
-  const rootDir = config.memoryDir !== undefined && config.memoryDir.length > 0
+  const rootDir = config.memoryDir !== undefined && config.memoryDir !== undefined && config.memoryDir.length > 0
     ? resolve(config.memoryDir)
     : join(resolveDshHome(), 'memory')
-  const store = new MemoryStore(rootDir, { staleAfterDays: config.staleAfterDays })
+  // 1.4.0 live 配置:启动时把用户覆盖(settings.json,面板设置中心写)合并成
+  // **单个可变对象**,按引用传给注入/固化/路由——maxBytes 等注入侧参数在
+  // config.set 后的下一个请求生效,无需重启;store 的 staleAfterDays 字段
+  // 同步指向该对象(每行写入时重读)。profileDefaults 保留原始声明值:
+  // 单字段"重置回 profile"时从这里恢复(审查确认 live 需要回退源)
+  const profileDefaults: Config = { ...config }
+  const live: Config = { ...config }
+  void loadSettings(rootDir).then(overrides => { Object.assign(live, overrides) })
+  const store = new MemoryStore(rootDir, {})
+  Object.defineProperty(store, 'staleAfterDays', {
+    get: () => live.staleAfterDays,
+    configurable: true,
+  })
 
-  registerMemoryTools(ctx, store, config.enableUserScope)
+  registerMemoryTools(ctx, store, live)
 
   // P2-2:Web 面板 API(宿主半路由)。connection 服务由 web-app 组合提供,
   // 加载顺序晚于本插件——用 inject 回调等待服务就绪再注册(非 web 组合永不回调)。
   // 回调使用框架给的 fiber ctx 注册,依赖消失时路由 effect 随作用域自动回收。
+  // 1.4.0:传 live 对象——预算/淘汰参数在设置变更后立即反映到面板
   ctx.inject(['connection'], fiberCtx => {
-    registerMemoryApi(fiberCtx, store, rootDir, {
-      maxBytes: config.maxBytes,
-      staleAfterDays: config.staleAfterDays,
-    })
+    registerMemoryApi(fiberCtx, store, rootDir, live as unknown as Parameters<typeof registerMemoryApi>[3], profileDefaults as unknown as Record<string, unknown>)
   })
 
   // P1:会话结束自动固化(autoSummarize=false 时 no-op);
-  // 同时把会话捕获查询器交给注入侧(#18 相关性截断的词集来源)
-  const consolidation = registerConsolidation(ctx, store, {
-    autoSummarize: config.autoSummarize,
-    autoSummarizeMaxMemories: config.autoSummarizeMaxMemories,
-    autoSummarizeMaxTokens: config.autoSummarizeMaxTokens,
-    enableUserScope: config.enableUserScope,
-    minImportance: config.minImportance,
-  })
+  // 同时把会话捕获查询器交给注入侧(#18 相关性截断的词集来源)。
+  // 1.4.0:传 live 对象(含 Config 超集字段,结构兼容)——autoSummarize/
+  // minImportance 等在设置变更后的下一次会话/候选即时生效
+  const consolidation = registerConsolidation(ctx, store, live)
 
   // P1:软淘汰的会话启动评估(审查 major 修复):淘汰是索引重建时的惰性评估,
   // 无新写入的仓库永远等不到重建——每个会话首 agent 创建时刷新一次两层索引。
-  if (config.staleAfterDays > 0) {
-    const refreshed = new Set<string>()
-    ctx.on('agent/created', ({ agent }) => {
-      const cwd = agent.session.header.cwd
-      if (cwd === undefined) return
-      if (refreshed.has(agent.session.id)) return
-      refreshed.add(agent.session.id)
-      void store.refreshIndex('project', cwd)
-      if (config.enableUserScope) void store.refreshIndex('user')
-    })
-    ctx.on('session/disposed', session => { refreshed.delete(session.id) })
-  }
+  // 1.4.0 修复:不能拿冻结的 config.staleAfterDays 当注册门槛(运行时在设置中心
+  // 开启软淘汰会静默失效)——无条件注册,handler 内读 live 当场判断
+  const refreshed = new Set<string>()
+  ctx.on('agent/created', ({ agent }) => {
+    if (live.staleAfterDays <= 0) return
+    const cwd = agent.session.header.cwd
+    if (cwd === undefined) return
+    if (refreshed.has(agent.session.id)) return
+    refreshed.add(agent.session.id)
+    void store.refreshIndex('project', cwd)
+    if (live.enableUserScope) void store.refreshIndex('user')
+  })
+  ctx.on('session/disposed', session => { refreshed.delete(session.id) })
 
   // 唯一注入段:动态 text,每个 step 重组装时按当前 agent 的 cwd 重新求值;
   // 两层均无记忆时返回空串(整段消失,对齐 Claude Code"有记忆才注入")。
@@ -109,7 +117,9 @@ export function apply(ctx: Context, config: Config): void {
   // audit.jsonl(注入审计 #11);返回值即注入文本,审计纯副作用绝不影响注入。
   // 1.3.0(#18):固化 handle 的 getQueryText 传入——注入侧冻结会话词集,
   // 超预算时按相关性截断(词集由 audit 层冻结,KV-safe)
-  const audit = registerInjectionAudit(store, config, rootDir, consolidation.getQueryText)
+  // 1.4.0 修复(审查 major):传 live 而非冻结 config——设置中心改 maxBytes
+  // 后注入预算立即生效(此前传 config 导致设置永不作用于注入路径,重启也不恢复)
+  const audit = registerInjectionAudit(store, live, rootDir, consolidation.getQueryText)
   ctx.systemPrompt.section({
     name: MEMORY_SECTION,
     order: 4000,

@@ -23,6 +23,8 @@ import { descriptionSimilarity } from './matching.ts'
 import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
 import type { ImportTarget } from './import-claude.ts'
 import { readAudit, aggregateAudit } from './audit.ts'
+import { loadSettings, applySettings, SETTABLE_FIELDS } from './settings.ts'
+import type { SettableField, SettingsOverrides } from './settings.ts'
 import { renderAgentsExport, trustedForExport } from './export-agents.ts'
 import { indexByteBudget } from './prompt.ts'
 import { homedir } from 'node:os'
@@ -76,7 +78,7 @@ async function readGroup(
   dir: string,
   scope: MemoryScope,
   slug: string,
-  staleAfterDays: number,
+  staleAfterDays: () => number,
   now: number,
 ): Promise<PanelGroup> {
   const group: PanelGroup = { key: slug, scope, slug, memories: [], indexBytes: 0, indexText: null }
@@ -123,7 +125,7 @@ async function readGroup(
       type: record.type,
       pinned: record.pinned === true,
       disabled: record.disabled === true,
-      stale: isStale(record, staleAfterDays, now),
+      stale: isStale(record, staleAfterDays(), now),
       ...(record.status !== undefined ? { status: record.status } : {}),
       ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
       ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
@@ -226,9 +228,10 @@ export function buildHealthReport(entries: Array<{ record: MemoryRecord, scope: 
 }
 
 /** 扫描记忆根目录的全部组(用户级在前,项目组按目录名序)。 */
-export async function scanGroups(rootDir: string, staleAfterDays = 0): Promise<PanelGroup[]> {
+export async function scanGroups(rootDir: string, staleAfterDays: number | (() => number) = 0): Promise<PanelGroup[]> {
+  const stale = typeof staleAfterDays === 'number' ? () => staleAfterDays : staleAfterDays
   const now = Date.now()
-  const groups: PanelGroup[] = [await readGroup(join(rootDir, USER_SCOPE_DIR), 'user', USER_SCOPE_DIR, staleAfterDays, now)]
+  const groups: PanelGroup[] = [await readGroup(join(rootDir, USER_SCOPE_DIR), 'user', USER_SCOPE_DIR, stale, now)]
   let entries: string[]
   try {
     entries = await fsp.readdir(rootDir)
@@ -238,7 +241,7 @@ export async function scanGroups(rootDir: string, staleAfterDays = 0): Promise<P
   for (const entry of entries.sort()) {
     if (!entry.startsWith('--') || !entry.endsWith('--')) continue
     if (entry === USER_SCOPE_DIR) continue
-    groups.push(await readGroup(join(rootDir, entry), 'project', entry, staleAfterDays, now))
+    groups.push(await readGroup(join(rootDir, entry), 'project', entry, stale, now))
   }
   return groups.filter(group => group.memories.length > 0 || group.indexText !== null)
 }
@@ -266,14 +269,71 @@ export function registerMemoryApi(
   ctx: Context,
   store: MemoryStore,
   rootDir: string,
-  // homeDir 仅测试注入用(Claude 记忆扫描根 = homeDir/.claude/projects);生产取 homedir()
-  // staleAfterDays 与注入路径同源,面板才能标出"陈旧未注入"的记忆
-  config: { maxBytes: number, homeDir?: string, staleAfterDays?: number },
+  // homeDir 仅测试注入用(Claude 记忆扫描根 = homeDir/.claude/projects);生产取 homedir()。
+  // 1.4.0:config 是 **live 对象**(index.ts 的合并配置,按引用传入)——
+  // 设置路由(config.set)原地改它,maxBytes/staleAfterDays 在下一个请求生效
+  config: { maxBytes: number, homeDir?: string, staleAfterDays?: number, [key: string]: unknown },
+  // 1.4.0:profile 声明的原始值(live 的回退源)——单字段"重置回 profile
+  // 默认"时从这里恢复(config.set 的 null 语义)
+  profileDefaults: Record<string, unknown>,
 ): void {
   const connection = ctx.get('connection')
   if (connection === undefined) return // 非 web 组合:面板不存在,不注册
-  const home = config.homeDir ?? homedir()
-  const staleAfterDays = config.staleAfterDays ?? 0
+  const home = (config.homeDir as string | undefined) ?? homedir()
+  const staleAfterDays = () => (config.staleAfterDays as number | undefined) ?? 0
+  // 磁盘覆盖 + profile 默认 → 每字段生效值;顺带同步进 live(GET/Set 后双轨对齐)
+  const applyOverridesToLive = (overrides: SettingsOverrides): void => {
+    for (const field of Object.keys(SETTABLE_FIELDS) as SettableField[]) {
+      const value = Object.prototype.hasOwnProperty.call(overrides, field)
+        ? overrides[field]
+        : profileDefaults[field]
+      ;(config as Record<string, unknown>)[field] = value
+    }
+  }
+
+  connection.fetch.register({
+    path: `${BASE}/config.get`, methods: ['GET'], requestBody: 'buffered',
+    fetch: async () => {
+      // 设置中心:当前生效值 + 每字段来源(profile 声明 vs 用户覆盖)。
+      // 1.4.0 修复(审查 minor):以磁盘为单一真值源当场重算——启动窗口
+      // (index.ts 的异步 loadSettings 未完成)、跨进程写、手改 settings.json
+      // 三种分叉下,effective 与 sources 不再各说各话;GET 即收敛点(顺带
+      // 同步 live,外部变更也能被拉进来)
+      const overrides = await loadSettings(rootDir)
+      applyOverridesToLive(overrides)
+      const effective: Record<string, number | boolean> = {}
+      const sources: Record<string, string> = {}
+      for (const field of Object.keys(SETTABLE_FIELDS)) {
+        effective[field] = (config as Record<string, unknown>)[field] as number | boolean
+        sources[field] = Object.prototype.hasOwnProperty.call(overrides, field) ? 'override' : 'profile'
+      }
+      return json({ effective, overrides, sources })
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/config.set`, methods: ['POST'], requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const patch = (await request.json()) as Record<string, unknown>
+        if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+          return json({ error: 'body must be an object' }, 400)
+        }
+        // 越权字段(memoryDir / 未知键)直接 400——设置面只管白名单
+        const unknown = Object.keys(patch).filter(k => !Object.prototype.hasOwnProperty.call(SETTABLE_FIELDS, k))
+        if (unknown.length > 0) return json({ error: `unknown fields: ${unknown.join(', ')}` }, 400)
+        // 值为 null = 显式重置该字段(删覆盖,回 profile 默认);其余值
+        // 由 applySettings 白名单+范围校验
+        const merged = await applySettings(rootDir, patch)
+        // 原地应用到 live 配置:注入/固化/工具侧下一个请求即生效;
+        // 重置字段 merged 里已无该键 → 回 profile 默认(profileDefaults)
+        applyOverridesToLive(merged)
+        return json({ ok: true, overrides: merged })
+      } catch (error) {
+        return json({ error: String(error) }, 400)
+      }
+    },
+  })
 
   // Claude 导入 watcher(1.2.0):低频(5 分钟)扫描 Claude 记忆目录的可同步
   // 条数,groups.list 附带给面板做提示条——面板 polling 即可感知,不做推送。
@@ -305,7 +365,7 @@ export function registerMemoryApi(
     path: `${BASE}/groups.list`, methods: ['GET'], requestBody: 'buffered',
     fetch: async (request) => {
       const cwd = new URL(request.url).searchParams.get('cwd') ?? undefined
-      const groups = await scanGroups(rootDir, staleAfterDays)
+      const groups = await scanGroups(rootDir, staleAfterDays())
       if (cwd !== undefined && cwd.length > 0) {
         const currentSlug = projectKey(cwd)
         for (const group of groups) {

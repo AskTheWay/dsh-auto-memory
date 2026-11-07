@@ -18,9 +18,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { MemoryStore } from '../../src/store.ts'
+import { MemoryStore, DEFAULT_IMPORTANCE } from '../../src/store.ts'
 import { renderMemoryIndexText } from '../../src/prompt.ts'
-import { buildConsolidationPrompt, parseCandidates, sanitizeCandidate } from '../../src/consolidate.ts'
+import { buildConsolidationPrompt, parseCandidates, sanitizeCandidate, isChitchat } from '../../src/consolidate.ts'
+import { decideConsolidationAction, detectContradictions } from '../../src/matching.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const API_KEY = process.env.DEEPSEEK_API_KEY
@@ -160,11 +161,38 @@ for (let qi = 0; qi < targets.length; qi++) {
         const candidate = sanitizeCandidate(raw, false)
         if (candidate === null) continue
         const existingAll = await store.listAll(CWD)
-        const dup = existingAll.find(r => r.name === candidate.name)
-        if (dup !== undefined) {
-          await store.write({ name: dup.name, description: candidate.description, type: candidate.type, body: candidate.body }, 'project', CWD)
-        } else {
+        // —— 与产品 registerConsolidation 同一条决策路径(1.3.0 同步)——
+        const decision = decideConsolidationAction(candidate, existingAll)
+        if (decision.action === 'create') {
+          // #17 价值门槛(update 命中豁免,echo 续命;产品缺省 minImportance=4)
+          const effectiveImportance = candidate.importance ?? DEFAULT_IMPORTANCE[candidate.type]
+          if (effectiveImportance < 4) continue
+          if (isChitchat(candidate.body)) continue
           await store.write(candidate, 'project', CWD)
+        } else {
+          // #19 矛盾检测 → 演化谱系;无矛盾 → 原地更新(不传 status 交 store 单点)
+          const contradictions = detectContradictions(candidate, decision.target)
+          if (contradictions.length > 0) {
+            const baseName = candidate.name.length > 61 ? candidate.name.slice(0, 61) : candidate.name
+            let newName = candidate.name === decision.target.name ? `${baseName}-v2` : candidate.name
+            let attempt = 2
+            while (existingAll.some(r => r.name === newName)) {
+              attempt += 1
+              newName = `${baseName}-v${String(attempt)}`
+            }
+            await store.write({ ...candidate, name: newName, supersedes: decision.target.name }, 'project', CWD)
+            const old = await store.read(decision.target.name, 'project', CWD)
+            if (old !== null) {
+              await store.write({ name: old.name, description: old.description, type: old.type, body: old.body, status: 'superseded', supersededBy: newName }, 'project', CWD)
+            }
+          } else {
+            await store.write({
+              name: decision.target.name,
+              ...(candidate.title !== undefined ? { title: candidate.title } : {}),
+              description: candidate.description, type: candidate.type, body: candidate.body,
+              ...(candidate.importance !== undefined ? { importance: candidate.importance } : {}),
+            }, 'project', CWD)
+          }
         }
       }
     }

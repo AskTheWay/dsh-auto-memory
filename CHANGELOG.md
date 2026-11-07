@@ -6,6 +6,128 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.5.0] - 2026-11-08
+
+### Changed
+
+- **Tabbed panel** — the page is no longer one long scroll with the memory
+  list buried under four collapsible cards. A compact top bar (title +
+  global actions + an always-visible index-usage signal) sits above an
+  underline-style tab navigation: **Memories** (the default — search,
+  filters and the memory cards are the first screen), **Insights**
+  (injection stats and the recall funnel side by side in a two-column
+  grid), **Health** (the three checkup lists, badge-counted, every row
+  clickable to jump straight to that memory's card), and **Settings**.
+  Old hosts degrade exactly as before: a tab disappears when its data
+  source is missing; with none available the tab bar itself vanishes and
+  the panel falls back to the plain list. Tab panes stay mounted and are
+  hidden with CSS — an unsaved editor draft, slider positions and scroll
+  state survive tab switches.
+- **Visual system, tightened** (adversarially reviewed design): all emoji
+  UI glyphs replaced by monochrome SVG icons (theme-following); identity
+  recolored to a color-blind-checked pair — user = brand blue, project =
+  teal (the old purple was indistinguishable from blue under deuteranopia),
+  both = blue/teal gradient, missing = hollow; type tags neutralized to
+  monospace chips (color budget now goes to scope identity and chart
+  marks only); the six-color project rotation and the stats-card gradient
+  are gone — the activity chart is a single blue measure with the latest
+  bar emphasized; the dual recall bar is blue/green with a visible legend;
+  font sizes below 10px eliminated.
+
+### Fixed
+
+- Adversarial-review findings (29-agent workflow, 24 raw → 21 confirmed,
+  deduplicated to 6 root causes, all fixed): health-row and lineage jumps
+  to memories in non-current workspaces silently failed (the jump reset
+  all group collapse state, leaving the target card unrendered with no
+  retry path — jumps now explicitly expand the target group); tab
+  switching unmounted in-progress inputs (unsaved editor bodies and
+  settings sliders silently reverted); the index-usage signal vanished
+  with the tab bar on old hosts; the import-hint button was labeled
+  "locate" but opened the import dialog; narrow-container grid overflow;
+  focus loss after health-row jumps; assorted dead CSS and locale
+  mismatches.
+
+## [1.4.0] - 2026-11-08
+
+### Added
+
+- **Settings center**: the panel gains a Settings card — Focus/Companion
+  presets (one-click coding vs daily-companion profiles), sliders for index
+  budget / value gate / soft eviction, and an auto-consolidate toggle. Every
+  field carries a source badge (`profile` vs `your override`) and a per-field
+  ↺ reset back to the profile default. Changes apply **at runtime, no
+  restart**: the host merges user overrides over the profile config into a
+  single live object handed to the injection / consolidation / tool paths,
+  so a budget change lands on the very next request.
+  Overrides persist in the memory root's `settings.json` (atomic write,
+  0600, lock-serialized read-modify-write; malformed values are dropped
+  field-by-field, `memoryDir` is not settable). `config.get` treats disk as
+  the single source of truth and converges the live object on every read —
+  hand edits and cross-process writes are picked up; the panel saves only
+  dirty fields so untouched values never fossilize into overrides.
+- **Recall ranking & injection→recall funnel**: a dual-bar leaderboard
+  (blue = injections, green = recalls, with `reads/injected` ratios) and a
+  four-quadrant funnel — high value / budget hog / buried gem / low
+  activity — each quadrant with concrete actions (consider muting the hogs,
+  pinning the buried gems). `memory_search` hits now count as reads (top-3
+  results touched), making "passively injected yet never pulled" measurable;
+  the funnel hides itself below 4 injections instead of passing off
+  small-sample noise as quadrants.
+
+### Fixed
+
+- Adversarial-review findings (16-agent workflow, all reproduced before
+  fixing): the injection audit path received the frozen profile config, so
+  `maxBytes` overrides **never reached injection** (now it receives the live
+  object); the soft-eviction refresh hook was gated on the frozen config and
+  silently never registered when eviction was enabled at runtime (now
+  registered unconditionally, reading live values at session start);
+  concurrent `config.set` calls lost disk updates to a read-modify-write
+  race (now entirely inside the lock); slider caps matched the whitelist
+  (64 KB / 3650 days) instead of silently clamping the browser side.
+
+## [1.3.1] - 2026-11-06
+
+### Added
+
+- **Panel stats, visualized properly**: the injection-activity chart gains a
+  real coordinate system (left Y-axis byte scale with three ticks, horizontal
+  gridlines, three-point time axis); two new stacked distribution bars —
+  scope share (by injections) and type share (whole store) — with in-segment
+  percentages; the metric strip grows to four cells (budget-cut count, orange
+  when non-zero); the leaderboard carries rank numbers (top-3 highlighted);
+  the health summary becomes three colored count pills.
+- **Drill-down injection details**: every recent-injection timeline entry is
+  now expandable — the exact memory names injected in that event (with scope
+  dots), plus the budget-truncated names struck through with a scissors mark.
+  The host's `audit.stats` timeline now carries per-event
+  `injected`/`truncatedNames` lists (capped at 60); old hosts
+  degrade to non-expandable entries.
+- **LongMemEval re-run + needle probe** (runner synced to the exact product
+  consolidation path — value gate, chitchat suppressor, supersede lineage;
+  same seed, same 30-question subset): the score did **not** move (20.0%
+  vs 23.3% baseline, within n=30 noise) — the value-gate hypothesis was
+  wrong, and we say so. A per-question needle probe then located the real
+  boundary as two distinct mechanisms: everyday-trivia needles are filtered
+  at consolidation *by design* (the product keeps durable work facts, not
+  parking expenses), and correctly-consolidated needles are crowded out of
+  the ~14-row injection budget by recency decay among ~80 memories — with
+  relevance truncation structurally inapplicable (the benchmark injects
+  before the question is known). Both boundaries are conscious product
+  choices, now with precise failure coordinates. Full analysis in
+  [evals/README](evals/README.md); the probe ships as
+  `evals/runners/l2-needle-probe.mjs`.
+
+### Fixed
+
+- README install commands now use the shipped `web` profile — the old
+  `--profile demo` referred to this repo's own demo profile, which
+  fresh users don't have; the Install section is a proper three-step quick
+  start (npm pull → restart → where to look) with the npm package page
+  linked, plus the desktop plugin-manager path.
+
+
 ## [1.3.0] - 2026-10-30
 
 ### Added
@@ -526,3 +648,4 @@ page (generated from this file at publish time).
 [1.1.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.1.0
 [1.2.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.2.0
 [1.3.0]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.3.0
+[1.3.1]: https://github.com/AskTheWay/dsh-auto-memory/releases/tag/v1.3.1

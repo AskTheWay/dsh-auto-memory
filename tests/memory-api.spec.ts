@@ -50,7 +50,7 @@ function mount(homeDir: string, staleAfterDays = 0): void {
   }
   // 只需 connection 服务的假 Context:registerMemoryApi 只调用 ctx.get('connection')
   const ctx = { get: (name: string) => (name === 'connection' ? connection : undefined) } as unknown as Context
-  registerMemoryApi(ctx, store, join(base, 'memory-root'), { maxBytes: 4096, homeDir, staleAfterDays })
+  registerMemoryApi(ctx, store, join(base, 'memory-root'), { maxBytes: 4096, homeDir, staleAfterDays }, { maxBytes: 4096 })
 }
 
 async function seedClaude(): Promise<void> {

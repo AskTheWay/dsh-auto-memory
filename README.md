@@ -27,6 +27,12 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ## Highlights
 
+**1.4 — runtime settings + a recall funnel**: a Settings card (presets,
+sliders, per-field reset) changes the injection budget, value gate and
+eviction **at runtime — next request, no restart**; the recall funnel makes
+"injected but never actually read" visible and actionable (mute the budget
+hogs, pin the buried gems).
+
 **1.x — trustworthy memory + measured end-to-end**: consolidation products are
 born `candidate` with verbatim evidence quotes; only *you* can grant
 `verified`; disputed memories are never re-injected; every write passes an
@@ -235,7 +241,28 @@ after a few sessions.
 
 ## Configuration
 
-Override in your profile's `cordis.patch.yml` (config replaces wholesale):
+Two layers, hottest knobs first:
+
+**Runtime settings (1.4.0)** — the panel's Settings card, no restart, no
+YAML. Focus/Companion presets, sliders for index budget / value gate /
+soft eviction, auto-consolidate toggle. Every field shows where its value
+comes from (`profile` or `your override`) and resets to the profile default
+with one ↺. Changes apply to the **next request** — the injection budget,
+consolidation gate and eviction read a live config object, not a frozen
+snapshot. Stored as overrides in the memory root's `settings.json`
+(whitelist + range validated; `memoryDir` deliberately not settable):
+
+| field | range | default | what it does |
+| --- | --- | --- | --- |
+| `maxBytes` | 1024–65536 | 4096 | per-request injection budget |
+| `minImportance` | 0–10 | 4 | consolidation value gate (0 = off) |
+| `staleAfterDays` | 0–3650 | 0 | soft-hide zero-read memories (0 = off) |
+| `autoSummarize` | on/off | false | consolidate durable facts on session end |
+| `autoSummarizeMaxMemories` | 1–20 | 5 | cap per consolidation |
+
+**Profile config** — override in your profile's `cordis.patch.yml` (config
+replaces wholesale). This is where `memoryDir` and `enableUserScope` live,
+and where the defaults the runtime layer falls back to come from:
 
 ```yaml
 - id: auto-memory
@@ -274,7 +301,8 @@ Deep dives: [design decisions](docs/design.md) ·
 - [x] P3 — update-replace semantics, matching core shared with the eval harness
 - [x] 0.8–1.0 — Claude Code import bridge (revocable), injection audit + stats, trustworthy memory (status / evidence / guard / health)
 - [x] 1.1–1.2 — L2 end-to-end + LongMemEval alignment, `memory_search`, import watcher, reverse AGENTS.md export
-- [ ] L2 refinements (relevance-ranked truncation), community-driven work
+- [x] 1.3–1.4 — consolidation value gate + chitchat suppressor, relevance-ranked truncation, memory evolution lineage, runtime settings center, injection→recall funnel
+- [ ] real-coding-session blind eval (#20), community-driven work
 
 ## Changelog
 
