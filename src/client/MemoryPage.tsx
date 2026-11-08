@@ -23,6 +23,10 @@ interface PanelMemory {
   disabled: boolean
   /** 软淘汰命中:文件仍在,但不会进入下一次注入索引。 */
   stale: boolean
+  /** 已过有效期(1.6.0):不注入、文件保留,可续期。 */
+  expired: boolean
+  /** 有效期(epoch ms;缺省 = 永久)。 */
+  validUntilMs?: number
   /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
   status?: string
   /** #19 谱系:被取代(值=后继名)与取代(值=前代名)。 */
@@ -76,11 +80,12 @@ function importKey(slug: string, file: string): string {
   return `${slug}\u0000${file}`
 }
 
-/** 记忆体检响应形状(health.report,1.0.0)。 */
+/** 记忆体检响应形状(health.report,1.0.0;1.6.0 加 expired 榜)。 */
 interface HealthReportFace {
   unverified: Array<{ name: string; scope: string; slug: string; hasEvidence: boolean }>
   zombies: Array<{ name: string; scope: string; slug: string; ageDays: number }>
   conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
+  expired: Array<{ name: string; scope: string; slug: string; expiredDays: number }>
 }
 
 /** 设置中心响应形状(config.get,1.4.0)。 */
@@ -124,14 +129,15 @@ export type MemoryPageProps = PropsRuntime<'main'> & PropsLocale<'autoMemory'> &
 
 /** 类型 tag 的 CSS 类映射(描边色编码,颜色定义在 PANEL_CSS)。 */
 /**
- * 类型标签:统一中性 chip(等宽小写)——类型可用文字/筛选表达,彩色留给
- * 作用域身份与图表 mark(1.5.0 视觉纪律:全屏彩色像素占比 <10%)。
+ * 类型标签:低饱和 tinted chip(1.6.0 用户实测反馈:全中性后记忆行灰成一片、
+ * 无从扫读)——12% 透明底 + 对应色文字,彩色恢复"扫读区分度"但依然克制
+ * (色块面积小,不与作用域身份色竞争)。
  */
 const TYPE_TAG: Record<string, string> = {
-  user: 'dam-tag',
-  feedback: 'dam-tag',
-  project: 'dam-tag',
-  reference: 'dam-tag',
+  user: 'dam-tag dam-tag--user',
+  feedback: 'dam-tag dam-tag--feedback',
+  project: 'dam-tag dam-tag--project',
+  reference: 'dam-tag dam-tag--reference',
 }
 
 /** 行内操作图标(单色 SVG,跟随主题文字色;不依赖 emoji 字体)。 */
@@ -249,8 +255,9 @@ function projectsFromTimeline(timeline: AuditStatsFace['timeline']): ProjectRow[
  * 记忆体检(1.0.0):待验证/僵尸/矛盾三榜——只读报告,行动在对应记忆卡片上
  * (卡片带 candidate 徽章与 ✓/⊘ 按钮;行内标注归属层)。
  * 1.5.0:并入独立体检 tab;每行可点 = 切回记忆 tab 并直达该卡片(onLocate)。
+ * 1.6.0:第四榜「已过期」+ 行内一键续期 90 天(onRenew)。
  */
-function HealthSection({ health, t, onLocate }: { health: HealthReportFace; t: Translate; onLocate: (name: string) => void }): ReactNode {
+function HealthSection({ health, t, onLocate, onRenew, busy }: { health: HealthReportFace; t: Translate; onLocate: (name: string) => void; onRenew: (target: { name: string; scope: string; slug: string }) => Promise<void>; busy: boolean }): ReactNode {
   const scopeLabel = (scope: string): string => (scope === 'user' ? t('scopeUser') : t('scopeProject'))
   return (
     <section className="dam-stats">
@@ -263,6 +270,7 @@ function HealthSection({ health, t, onLocate }: { health: HealthReportFace; t: T
         <span className="dam-row" style={{ gap: '5px', marginLeft: 'auto', marginRight: '4px' }}>
           {health.unverified.length > 0 && <span className="dam-health-pill" data-kind="unverified">? {health.unverified.length}</span>}
           {health.zombies.length > 0 && <span className="dam-health-pill" data-kind="zombies"><Icon name="clock" size={10} /> {health.zombies.length}</span>}
+          {health.expired.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⏱ {health.expired.length}</span>}
           {health.conflicts.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⚠ {health.conflicts.length}</span>}
         </span>
       </header>
@@ -318,12 +326,26 @@ function HealthSection({ health, t, onLocate }: { health: HealthReportFace; t: T
             </button>
           ))}
         </div>
+        <div className="dam-block">
+          <p className="dam-section">{t('healthExpired')}</p>
+          {health.expired.length === 0 && <p className="dam-note">{t('healthNone')}</p>}
+          {health.expired.map(m => (
+            <span key={`e-${m.scope}-${m.slug}-${m.name}`} className="dam-health-row">
+              <button type="button" className="dam-health-locate" title={t('healthLocateTip')} onClick={() => { onLocate(m.name) }}>
+                <span className="dam-badge dam-badge--warn">⏱ {t('expiredAgo', { n: m.expiredDays })}</span>
+                <code title={m.name}>{m.name}</code>
+                <span className="dam-health-meta">{scopeLabel(m.scope)}</span>
+              </button>
+              <button type="button" className="dam-btn" disabled={busy} title={t('renewAction')} onClick={() => { void onRenew({ name: m.name, scope: m.scope, slug: m.slug }) }}>{t('renewAction')}</button>
+            </span>
+          ))}
+        </div>
       </div>
     </section>
   )
 }
 
-function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Translate; now: number; groups: PanelGroup[] | null }): ReactNode {
+function StatsSection({ stats, t, now, groups, budgetBytes }: { stats: AuditStatsFace; t: Translate; now: number; groups: PanelGroup[] | null; budgetBytes: number }): ReactNode {
   type StatsMemory = AuditStatsFace['memories'][number]
   type Scope = NonNullable<StatsMemory['scope']>
   const total = stats.memories.length
@@ -344,9 +366,16 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
   const [openTs, setOpenTs] = useState<number | null>(null)
 
   // ---- 1.4.0 新增派生数据 ----
-  /** 活动柱图:最近 24 次注入(时间升序),高=字节,全柱品牌蓝+latest 强调 */
+  /** 活动柱图:最近 24 次注入(时间升序),高=字节,全柱品牌蓝+latest 强调。
+   * 1.6.0 修复:定标含当前生效预算(scaleMax = max(数据, 预算))——Y 轴与
+   * 预算参考线随设置中心的索引预算即刻变化,而不是停在历史数据的量级 */
   const activity = stats.timeline.slice(-24)
   const maxActivityBytes = activity.reduce((max, e) => Math.max(max, e.bytes), 0)
+  const scaleMax = Math.max(maxActivityBytes, budgetBytes)
+  /** 预算参考线位置(图内百分比;贴顶/贴底时略收以免溢出边框) */
+  const budgetLinePos = budgetBytes > 0
+    ? Math.min(96, Math.max(2, Math.round(100 - (budgetBytes / scaleMax) * 100)))
+    : null
   /** 作用域分布:按注入次数加权的 user/project/both/missing 份额 */
   const scopeShare = new Map<Scope | 'missing', number>()
   for (const m of stats.memories) {
@@ -440,20 +469,31 @@ function StatsSection({ stats, t, now, groups }: { stats: AuditStatsFace; t: Tra
           <div className="dam-metric"><b style={{ color: truncTotal > 0 ? 'var(--dsw-alias-state-warn-primary,#d97706)' : undefined }}>{truncTotal}</b><span>{t('statsTruncMetric')}</span></div>
         </div>
 
-        {/* 活动柱图:最近注入的字节走势,色=项目;左 Y 轴刻度 + 横向网格线 + 底部时间轴 */}
+        {/* 活动柱图:最近注入的字节走势;**定标含当前生效预算**(1.6.0 修复:
+            用户反馈 Y 轴停在旧数据量级、不随设置中心的索引预算变化——现在
+            Y 轴顶 = max(数据, 预算),并画预算虚线参考线,改预算即刻可见) */}
         {activity.length > 1 && (
           <div className="dam-block">
             <p className="dam-section">{t('statsActivity')}</p>
             <div className="dam-chart-row">
               <div className="dam-chart-y" aria-hidden="true">
-                <span>{(maxActivityBytes / 1024).toFixed(1)}K</span>
-                <span>{(maxActivityBytes / 2048).toFixed(1)}K</span>
+                <span>{(scaleMax / 1024).toFixed(1)}K</span>
+                <span>{(scaleMax / 2048).toFixed(1)}K</span>
                 <span>0</span>
               </div>
               <div className="dam-chart">
                 <div className="dam-chart-grid" aria-hidden="true"><i /><i /><i /></div>
+                {budgetLinePos !== null && (
+                  <span
+                    className="dam-chart-budget"
+                    style={{ top: `${budgetLinePos}%` }}
+                    title={`${t('budget')} ${formatBytes(budgetBytes)}`}
+                  >
+                    <b>{formatBytes(budgetBytes)}</b>
+                  </span>
+                )}
                 {activity.map((entry, index) => {
-                  const height = maxActivityBytes === 0 ? 4 : Math.max(6, Math.round((entry.bytes / maxActivityBytes) * 100))
+                  const height = scaleMax === 0 ? 4 : Math.max(6, Math.round((entry.bytes / scaleMax) * 100))
                   const isLatest = index === activity.length - 1
                   const label = (entry.cwd.split(/[\\/]/).pop() ?? entry.cwd) || '—'
                   return (
@@ -1014,6 +1054,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                     key={memory.name}
                     id={`dam-m-${group.key}-${memory.name}`}
                     className="dam-memory"
+                    data-pinned={memory.pinned ? '1' : '0'}
                     data-muted={memory.disabled ? '1' : '0'}
                     data-stale={memory.stale && !memory.disabled ? '1' : '0'}
                     data-expanded={expanded ? '1' : '0'}
@@ -1041,6 +1082,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         {memory.pinned && <span className="dam-memory-pin" title={t('pinned')}><Icon name="pin" size={11} /></span>}
                         {memory.disabled && <span className="dam-badge dam-badge--muted">{t('mutedShort')}</span>}
                         {memory.stale && !memory.disabled && <span className="dam-badge dam-badge--warn">{t('staleShort')}</span>}
+                        {memory.expired && <span className="dam-badge dam-badge--warn" title={t('validUntilHint')}>⏱ {t('expiredBadge')}</span>}
                         {memory.status === 'candidate' && <span className="dam-badge dam-badge--cand" title={t('statusTipCandidate')}>? {t('statusCandidate')}</span>}
                         {memory.status === 'verified' && <span className="dam-badge dam-badge--ok" title={t('statusVerified')}>✓ {t('statusVerified')}</span>}
                         {memory.status === 'disputed' && <span className="dam-badge dam-badge--danger" title={t('statusTipDisputed')}>⊘ {t('statusDisputed')}</span>}
@@ -1077,6 +1119,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         title={readonlyHint ?? (expanded ? t('hideBody') : t('showBody'))}
                         aria-label={expanded ? t('hideBody') : t('showBody')}
                         onClick={() => { toggleBody(group, memory) }}
+                        data-tone="brand"
                       ><Icon name="book" /></button>
                       <button
                         type="button"
@@ -1085,6 +1128,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         title={readonlyHint ?? t('edit')}
                         aria-label={t('edit')}
                         onClick={() => { void openEditor(group, memory) }}
+                        data-tone="brand"
                       ><Icon name="edit" /></button>
                       <button
                         type="button"
@@ -1094,6 +1138,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         title={readonlyHint ?? (memory.pinned ? t('unpinAction') : t('pinAction'))}
                         aria-label={memory.pinned ? t('unpinAction') : t('pinAction')}
                         onClick={() => { toggleFlag(group, memory, 'pinned') }}
+                        data-tone="warn"
                       ><Icon name="pin" /></button>
                       <button
                         type="button"
@@ -1103,6 +1148,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         title={readonlyHint ?? (memory.disabled ? t('unmuteAction') : t('muteAction'))}
                         aria-label={memory.disabled ? t('unmuteAction') : t('muteAction')}
                         onClick={() => { toggleFlag(group, memory, 'disabled') }}
+                        data-tone="muted"
                       ><Icon name={memory.disabled ? 'unmute' : 'mute'} /></button>
                       <button
                         type="button"
@@ -1173,7 +1219,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const showInsights = stats !== null && stats.injections > 0
   const healthIssueCount = health === null
     ? 0
-    : health.unverified.length + health.zombies.length + health.conflicts.length
+    : health.unverified.length + health.zombies.length + health.conflicts.length + health.expired.length
   const showHealth = health !== null && healthIssueCount > 0
   const showSettings = settings !== null
   const showTabBar = showInsights || showHealth || showSettings
@@ -1214,12 +1260,47 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       })
   }
 
+  /**
+   * 过期记忆一键续期(1.6.0):按 scope+slug 精确定组(跨层/跨项目同名不串,
+   * 审查 major 修复),先读原正文(write 路由整条重写,body 缺省会清空),
+   * 带新 validUntilMs=now+90d 重写;显式透传 status 避免触发降级判定;
+   * 项目组沿用 cwd(group) 门禁——非当前工作区只读组直接提示失败。
+   */
+  const renewExpired = async (target: { name: string; scope: string; slug: string }): Promise<void> => {
+    const group = groups?.find(g => g.scope === target.scope && g.slug === target.slug)
+    const memory = group?.memories.find(m => m.name === target.name)
+    if (group === undefined || memory === undefined) return
+    if (group.scope === 'project' && group.current !== true) {
+      setActionError(t('renewFailed'))
+      return
+    }
+    const owningCwd = cwd(group)
+    try {
+      const full = await read({ name: target.name, scope: group.scope, ...(owningCwd !== undefined ? { cwd: owningCwd } : {}) })
+      await act(() => write({
+        ...(owningCwd !== undefined ? { cwd: owningCwd } : {}),
+        scope: group.scope,
+        name: target.name,
+        description: memory.description,
+        type: memory.type,
+        body: full.body,
+        ...(memory.pinned ? { pinned: true } : {}),
+        ...(memory.disabled ? { disabled: true } : {}),
+        ...(memory.status !== undefined ? { status: memory.status } : {}),
+        validUntilMs: Date.now() + 90 * 86_400_000,
+      }))
+    } catch {
+      setActionError(t('renewFailed'))
+    }
+  }
+
   return (
     <div className="dam-root" ref={rootRef}>
       <div className="dam-shell">
       {/* 顶条(1.5.0):标题一行(intro 收进 title 提示)+ 全局动作 */}
       <header className="dam-header">
         <div className="dam-heading">
+          <span className="dam-brand-mark" aria-hidden="true" />
           <h2 className="dam-title" title={t('intro')}>{t('title')}</h2>
         </div>
         <div className="dam-header-side">
@@ -1356,7 +1437,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
 
           {total === 0 && (
             <div className="dam-empty">
-              <span className="dam-empty-icon" aria-hidden="true">🧠</span>
+              <span className="dam-empty-icon" aria-hidden="true"><Icon name="book" size={34} /></span>
               <h3>{t('emptyTitle')}</h3>
               <p>{t('emptyStep1')}</p>
               <p className="dam-note">{t('emptyStep2')} · {t('emptyStep3')}</p>
@@ -1377,7 +1458,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
       <div className="dam-tabpane" data-on={activeTab === 'insights' ? '1' : '0'}>
         {stats !== null && (
           <div className="dam-insights">
-            <StatsSection stats={stats} t={t} now={now} groups={groups} />
+            <StatsSection stats={stats} t={t} now={now} groups={groups} budgetBytes={budgetBytes} />
             {groups !== null && <RecallSection stats={stats} groups={groups} t={t} />}
           </div>
         )}
@@ -1385,7 +1466,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
 
       <div className="dam-tabpane" data-on={activeTab === 'health' ? '1' : '0'}>
         {health !== null && showHealth && (
-          <HealthSection health={health} t={t} onLocate={jumpTo} />
+          <HealthSection health={health} t={t} onLocate={jumpTo} onRenew={renewExpired} busy={busy} />
         )}
       </div>
 
@@ -1496,12 +1577,21 @@ function MemoryEditor({ t, initial, initialBody, busy, inline, onSave, onCancel 
   /** 保存进行中:禁用 Save/Cancel,防双击重复提交(#8) */
   busy: boolean
   inline?: boolean
-  onSave: (payload: { name: string; title?: string; description: string; type: string; body: string; pinned?: boolean }) => Promise<void>
+  onSave: (payload: { name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; validUntilMs?: number }) => Promise<void>
   onCancel: () => void
 }): ReactNode {
   const [title, setTitle] = useState(initial.title ?? '')
   const [description, setDescription] = useState(initial.description)
   const [body, setBody] = useState(initialBody)
+  // 有效期(1.6.0):初值 = 剩余天数(向上取整);空 = 清除(永久)。
+  // 保存时**只在用户改过该字段才发 validUntilMs**(dirty 检测,审查修复)——
+  // 否则编辑一条已过期记忆、只改正文,空初值会发哨兵 0 静默清保质期+复活
+  const [validDays, setValidDays] = useState(() => {
+    if (initial.validUntilMs === undefined) return ''
+    const remaining = Math.ceil((initial.validUntilMs - Date.now()) / 86_400_000)
+    return remaining > 0 ? String(remaining) : ''
+  })
+  const validDaysInit = useRef(validDays)
   const rootRef = useRef<HTMLDivElement>(null)
   // 行内编辑展开时滚到最近可见位置:编辑器比卡片高,不滚可能落在视口外
   useEffect(() => {
@@ -1516,8 +1606,28 @@ function MemoryEditor({ t, initial, initialBody, busy, inline, onSave, onCancel 
       <input className="dam-input" value={description} onChange={event => { setDescription(event.target.value) }} />
       <label className="dam-label">{t('bodyField')}</label>
       <textarea className="dam-textarea" value={body} onChange={event => { setBody(event.target.value) }} />
+      <label className="dam-label" title={t('validUntilHint')}>{t('validUntilField')} · {t('validUntilHint')}</label>
+      <input className="dam-input" type="number" min={1} max={3650} placeholder={t('validUntilNone')} value={validDays} onChange={event => { setValidDays(event.target.value) }} />
       <div className="dam-row">
-        <button className="dam-btn dam-btn-primary" disabled={busy} onClick={() => { void onSave({ name: initial.name, title: title.trim().length > 0 ? title.trim() : undefined, description, type: initial.type, body, pinned: initial.pinned }) }}>💾 {t('save')}</button>
+        <button className="dam-btn dam-btn-primary" disabled={busy} onClick={() => {
+          const validDaysDirty = validDays !== validDaysInit.current
+          const parsedDirty = Number(validDays)
+          void onSave({
+          name: initial.name,
+          title: title.trim().length > 0 ? title.trim() : undefined,
+          description,
+          type: initial.type,
+          body,
+          pinned: initial.pinned,
+          // dirty 才发:未改字段不触碰保质期;改过则 数值=续期 N 天,清空=清除(永久)
+          ...(validDaysDirty
+            ? {
+              validUntilMs: validDays.trim().length > 0 && Number.isSafeInteger(parsedDirty) && parsedDirty > 0
+                ? Date.now() + parsedDirty * 86_400_000
+                : 0,
+            }
+            : {}),
+        }) }}>{t('save')}</button>
         <button className="dam-btn" disabled={busy} onClick={onCancel}>{t('cancel')}</button>
       </div>
     </div>

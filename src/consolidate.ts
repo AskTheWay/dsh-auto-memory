@@ -75,6 +75,8 @@ export interface RawCandidate {
   importance?: unknown
   /** 支撑该事实的转写逐字摘录(1.0.0;宽松校验,坏值只丢 evidence 不丢整条)。 */
   evidence?: unknown
+  /** 有效期天数(1.6.0;时效性事实的保质期;非法/缺省 = 永久)。 */
+  validUntilDays?: unknown
 }
 
 /** sanitize 后的可写候选。 */
@@ -91,9 +93,23 @@ export interface SanitizedCandidate {
   status: MemoryStatus
   /** 证据链(sessionId 来自固化调用点;quote 为 LLM 摘录,两者齐备才落)。 */
   evidence?: MemoryEvidence
+  /** 有效期天数(1.6.0;1-3650;缺省 = 永久)。 */
+  validUntilDays?: number
 }
 
 // ---------- 纯函数(可测) ----------
+
+/**
+ * 候选 → store.write 入参(1.6.0 审查修复):剥掉 validUntilDays 折算成 epoch
+ * 的 validUntil。create/update/supersede 三分支共用——此前矛盾分支原样展开
+ * 候选,天数不是 store 认的字段,最该有保质期的时效矛盾新版本反而静默变永久。
+ */
+export function withValidUntil<T extends { validUntilDays?: number }>(candidate: T): Omit<T, 'validUntilDays'> {
+  const { validUntilDays, ...rest } = candidate
+  return validUntilDays !== undefined
+    ? { ...rest, validUntil: Date.now() + validUntilDays * 86_400_000 }
+    : rest
+}
 
 const USER_MAX_CHARS = 2000
 const ASSISTANT_MAX_CHARS = 500
@@ -191,6 +207,11 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean, o
     const scope: MemoryScope = raw.scope === 'user' ? (enableUserScope ? 'user' : 'project') : 'project'
     const importance = typeof raw.importance === 'number' && Number.isSafeInteger(raw.importance)
       ? Math.min(10, Math.max(1, raw.importance)) : undefined
+    // 有效期(1.6.0):时效性事实(计划/价格/版本/日程)由固化模型给保质期天数;
+    // 越界值(含 0/负数)静默丢弃(永久)——与 importance 同款 fail-safe
+    const validUntilDays = typeof raw.validUntilDays === 'number' && Number.isSafeInteger(raw.validUntilDays)
+      && raw.validUntilDays >= 1 && raw.validUntilDays <= 3650
+      ? raw.validUntilDays : undefined
     // 可信状态:候选一律有主——默认 candidate;指令注入模式命中降级 disputed
     // (store.write 单点还有二次校验,此处前置判定让候选对象自洽可测)。
     const disputed = detectDirectivePattern(body) || detectDirectivePattern(description)
@@ -214,6 +235,7 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean, o
       name, title, description, type, body, scope, status,
       ...(evidence !== undefined ? { evidence } : {}),
       ...(importance !== undefined ? { importance } : {}),
+      ...(validUntilDays !== undefined ? { validUntilDays } : {}),
     }
   } catch {
     return null
@@ -257,9 +279,13 @@ ${instructions}- Persist: who the user is (role, expertise, durable preferences)
 - Output AT MOST ${maxMemories} items. If nothing is worth persisting, output [].
 - "importance" is 1-10: 8-10 = identity/durable preferences, 5-7 = project facts
   worth keeping, 1-4 = marginal references. Be conservative, not everything is 9.
+- "validUntilDays" is an optional shelf life for time-sensitive facts ONLY
+  (plans with dates, prices, versions, schedules, "currently X"): after that
+  many days the memory stops being injected until renewed. Omit it for
+  durable facts — most memories should NOT have it.
 
 Return ONLY a JSON array, each element exactly:
-{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5,"evidence":"1-2 sentence VERBATIM quote from the transcript that supports this fact"}
+{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5,"validUntilDays":90,"evidence":"1-2 sentence VERBATIM quote from the transcript that supports this fact"}
 "evidence" must be copied word-for-word from the transcript above — do not
 paraphrase. If you cannot quote a supporting line, do not output that item.
 Use scope "user" only for user-global preferences; default "project".
@@ -431,7 +457,7 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
                 newName = `${baseName}-v${String(attempt)}`
               }
               await store.write({
-                ...candidate,
+                ...withValidUntil(candidate),
                 name: newName,
                 supersedes: decision.target.name,
               }, candidate.scope, cwd)
@@ -462,6 +488,7 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
             // 内容变化降回 candidate+旧证据失效;指令模式命中 disputed。
             // (此前在此无条件重置 verified,被对抗审查实测证伪)
             await store.write({
+              ...withValidUntil(candidate),
               name: decision.target.name,
               title: candidate.title ?? undefined,
               description: candidate.description,
@@ -472,7 +499,8 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
             written += 1
             continue
           }
-          await store.write(candidate, candidate.scope, cwd)
+          // create 分支:候选折算透传(与 update/supersede 同一 helper)
+          await store.write(withValidUntil(candidate), candidate.scope, cwd)
           written += 1
         }
         if (written > 0) ctx.logger.info(`[dsh-auto-memory] consolidated ${written} memor${written === 1 ? 'y' : 'ies'}`)

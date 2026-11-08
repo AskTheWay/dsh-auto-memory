@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { MemoryStore } from './store.ts'
-import { normalizeName, memoryScore, DEFAULT_IMPORTANCE } from './store.ts'
+import { normalizeName, memoryScore, DEFAULT_IMPORTANCE, detectSecrets, isExpired } from './store.ts'
 import { descriptionCoverage } from './matching.ts'
 import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
@@ -87,6 +87,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         type: 'string', enum: ['project', 'user'],
         description: "project: only this workspace's sessions; user: all sessions of this user. Default: update the layer where this name already exists, else project",
       },
+      validUntilDays: {
+        type: 'integer',
+        description: 'Optional shelf life in days (1-3650) for time-sensitive facts (plans, prices, versions, schedules). After expiry the memory stops being injected until renewed — set a new value to renew, 0 to clear. Omit for permanent memories',
+      },
     },
     output: {
       schema: {
@@ -97,9 +101,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           operation: { type: 'string', required: true, enum: ['created', 'updated'] },
           scope: { type: 'string', required: true, enum: ['project', 'user'] },
           pinned: { type: 'boolean', required: true },
+          redacted: { type: 'integer' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})` }],
+      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})${(value.redacted ?? 0) > 0 ? ` — ⚠ ${String(value.redacted)} secret(s) detected and redacted; do not store credentials in memories` : ''}` }],
     },
     async execute(args, exec) {
       const cwd = requireCwd(exec.agent?.session.header.cwd)
@@ -108,17 +113,32 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
       const explicit = parseExplicitScope(args.scope)
       const existing = await store.findIn(name, availableScopes(), cwd)
       const scope = guardScope(explicit ?? existing?.scope ?? 'project')
+      // 密钥透明告警(1.6.0):脱敏一直在 store 单点发生(静默),这里给写入方
+      // 一句明确回执——模型知道自己刚试图存密钥,下次学会不存。
+      // title 也过 store 脱敏但不在 body/description 主战场——一并计数防漏报(审查修复)
+      const secretHits = detectSecrets(`${args.description}\n${args.body}\n${args.title ?? ''}`)
+      // 有效期(1.6.0):天数 → epoch;0 = 清除哨兵;越界(负数/超上限)按未传
+      // 处理(继承/永久)——与固化层 sanitize 同口径,防"出生即过期"的不可见记忆(审查修复)
+      const days = args.validUntilDays
+      const validUntil = days === undefined
+        ? undefined
+        : days === 0
+          ? 0
+          : Number.isSafeInteger(days) && days >= 1 && days <= 3650
+            ? Date.now() + days * 86_400_000
+            : undefined
       await store.write({
         name,
         title: args.title !== undefined && args.title.trim().length > 0 ? args.title.trim().slice(0, 80) : undefined,
         ...(args.pinned !== undefined ? { pinned: args.pinned } : {}),
         ...(args.disabled !== undefined ? { disabled: args.disabled } : {}),
+        ...(validUntil !== undefined ? { validUntil } : {}),
         description: args.description.trim().slice(0, 160),
         type: args.type,
         body: args.body.slice(0, 2000),
       }, scope, cwd)
       const operation: 'created' | 'updated' = existing === null || existing.scope !== scope ? 'created' : 'updated'
-      return { name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true }
+      return { name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true, ...(secretHits > 0 ? { redacted: secretHits } : {}) }
     },
     presentCall: args => ({ card: 'generic', title: `Memory write: ${String(args.name)}`, kind: 'other', rawInput: args }),
   }))
@@ -142,6 +162,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           body: { type: 'string', required: true },
           scope: { type: 'string', required: true },
           supersededBy: { type: 'string', description: 'Present when this memory is superseded: the name of its successor' },
+          expired: { type: 'boolean', description: 'Present when this memory passed its shelf life (validUntil)' },
           linked: {
             type: 'array',
             description: 'One-line summaries of memories referenced via [[name]] in the body',
@@ -160,11 +181,16 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         const superseded = value.supersededBy !== undefined
           ? `\n\n⚠ SUPERSEDED by "${value.supersededBy}" — this memory is outdated and no longer injected; memory_read the successor for the current fact.\n`
           : ''
+        // 过期标记(1.6.0 审查修复):主动召回过期条目时明示这是历史事实——
+        // 否则模型把过期时效信息当现行事实复述
+        const expired = value.expired === true
+          ? '\n\n⏱ EXPIRED — this memory passed its shelf life and is no longer injected. Treat it as historical; re-confirm with the user before relying on it.\n'
+          : ''
         const linkedList = value.linked ?? []
         const linked = linkedList.length === 0
           ? ''
           : `\n\nLinked memories:\n${linkedList.map(l => `- ${l.name} — ${l.description}`).join('\n')}`
-        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${superseded}${linked}` }]
+        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${superseded}${expired}${linked}` }]
       },
     },
     async execute(args, exec) {
@@ -183,6 +209,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
       return {
         name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked,
         ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
+        ...(isExpired(record, Date.now()) ? { expired: true } : {}),
       }
     },
     isConcurrencySafe: () => true,

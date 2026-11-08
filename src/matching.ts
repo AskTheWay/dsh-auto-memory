@@ -141,9 +141,10 @@ function extractDates(text: string): string[] {
   return out
 }
 
-/** 数值提取:带单位上下文的数字(同单位不同值才算矛盾)。 */
+/** 数值提取:带单位上下文的数字(同单位不同值才算矛盾)。
+ * 1.6.0 补常见中文计量单位(元/岁/人/条/万)——CJK 场景矛盾检测的主战场。 */
 function extractNumbers(text: string): Array<{ value: string; unit: string }> {
-  return [...text.matchAll(/(\d+(?:\.\d+)?)\s*(%|GB|KB|MB|天|次|个|小时|分钟|秒|[vV]\d+)/g)]
+  return [...text.matchAll(/(\d+(?:\.\d+)?)\s*(%|GB|KB|MB|天|次|个|小时|分钟|秒|元|岁|人|条|万|[vV]\d+)/g)]
     .map(match => ({ value: match[1]!, unit: match[2]!.toLowerCase() }))
 }
 

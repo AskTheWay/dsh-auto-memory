@@ -27,6 +27,17 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ## Highlights
 
+**1.6 — memory has a shelf life**: time-sensitive facts (plans, prices,
+versions) carry a `validUntil`; expired memories stop being injected, surface
+on the health board with one-click renew, and are marked as historical when
+recalled. High-recall memories now rank higher in the index (a gentle
+reads multiplier), and writes carrying secrets get an explicit "redacted"
+receipt instead of silent sanitization.
+
+**1.5 — a panel, not a wall**: tabbed UI (Memories first-class, Insights,
+Health, Settings), monochrome SVG iconography, color-blind-checked identity
+colors — and health rows jump straight to the memory card they're about.
+
 **1.4 — runtime settings + a recall funnel**: a Settings card (presets,
 sliders, per-field reset) changes the injection budget, value gate and
 eviction **at runtime — next request, no restart**; the recall funnel makes
@@ -58,6 +69,8 @@ amnesia by design.
 | Memories injected into **every** system prompt, automatically | ✗ | ✓ (zero tokens when empty) |
 | Typed memories: user / feedback / project / reference | ✗ | ✓ |
 | Workspace + user scope layers — no cross-project leakage | ✗ | ✓ |
+| **Trust machine**: candidate / verified / disputed / superseded + verbatim evidence | ✗ | ✓ |
+| **Auditability**: every injection logged, recall funnel, health board | — | ✓ |
 | Crash & concurrency safety (cross-process locks, orphan recovery) | — | ✓ |
 | External services / databases / embeddings required | ✓✓✓ | **none — just plain Markdown files** |
 
@@ -196,11 +209,13 @@ no LLM, fully reproducible:
   [methodology](evals/README.md)
 - **Eviction never misfires**: four-class mixed scenario — only
   stale-zero-read memories get hidden; zero files lost; one read revives.
-- **Known limitation, pinned as baseline**: budget truncation is currently
-  positional (index order), not relevance-ranked — probe retention under
-  half-budget pressure drops to ~38%→10% as N grows. **Pinning fixes it for
-  what matters**: pinned probes retain **≥80%** at the same budget (0.3.0);
-  full relevance ranking remains on the roadmap.
+- **Relevance-ranked truncation** (#18, 1.3.0): when the index exceeds budget,
+  entries are kept by relevance to the frozen per-session query profile —
+  KV-safe, re-evaluated per session. Honest boundary: in "inject before the
+  question is known" scenarios (like LongMemEval) there is no query signal at
+  truncation time — the needle probe in
+  [evals/README](evals/README.md) pins those coordinates instead of hiding
+  them.
 
 This evaluation layer already caught a real bug: the byte budget used to
 exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).

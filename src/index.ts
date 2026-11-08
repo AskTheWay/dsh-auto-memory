@@ -91,13 +91,12 @@ export function apply(ctx: Context, config: Config): void {
   // minImportance 等在设置变更后的下一次会话/候选即时生效
   const consolidation = registerConsolidation(ctx, store, live)
 
-  // P1:软淘汰的会话启动评估(审查 major 修复):淘汰是索引重建时的惰性评估,
+  // P1:软淘汰/有效期的会话启动评估:两者都是索引重建时的惰性评估,
   // 无新写入的仓库永远等不到重建——每个会话首 agent 创建时刷新一次两层索引。
-  // 1.4.0 修复:不能拿冻结的 config.staleAfterDays 当注册门槛(运行时在设置中心
-  // 开启软淘汰会静默失效)——无条件注册,handler 内读 live 当场判断
+  // 无条件执行:1.6.0 起有效期与 staleAfterDays 无关(过期记忆也要在重建时
+  // 移出索引);无过期记忆时重建内容幂等,代价可忽略
   const refreshed = new Set<string>()
   ctx.on('agent/created', ({ agent }) => {
-    if (live.staleAfterDays <= 0) return
     const cwd = agent.session.header.cwd
     if (cwd === undefined) return
     if (refreshed.has(agent.session.id)) return

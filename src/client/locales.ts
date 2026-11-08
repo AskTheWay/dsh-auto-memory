@@ -181,6 +181,14 @@ export const zh = {
   legendInj: '注入',
   legendRec: '召回',
   legendRatio: '右列 = 召回/注入',
+  expiredBadge: '已过期',
+  expiredAgo: '已过期 {n} 天',
+  renewAction: '↻ 续 90 天',
+  renewFailed: '续期失败',
+  healthExpired: '已过期(不再注入)',
+  validUntilField: '有效期(天)',
+  validUntilHint: '时效性事实的保质期,到期停止注入。填数字 = 设置/续期;清空已填的数字 = 改为永久;不改动则保持现状',
+  validUntilNone: '永久',
 } as const
 
 export type PluginMemoryLocaleKey = keyof typeof zh
@@ -363,4 +371,12 @@ export const en: Record<PluginMemoryLocaleKey, string> = {
   legendInj: 'injected',
   legendRec: 'recalled',
   legendRatio: 'right column = recall/injection',
+  expiredBadge: 'expired',
+  expiredAgo: 'expired {n} d ago',
+  renewAction: '↻ renew 90 d',
+  renewFailed: 'renew failed',
+  healthExpired: 'Expired (no longer injected)',
+  validUntilField: 'Shelf life (days)',
+  validUntilHint: 'For time-sensitive facts; stops being injected after expiry. Enter a number to set/renew; clear a previous number to make it permanent; leave untouched to keep as-is',
+  validUntilNone: 'permanent',
 }

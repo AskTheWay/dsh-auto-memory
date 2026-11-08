@@ -1,7 +1,7 @@
 {
   "name": "dsh-auto-memory",
-  "version": "1.5.0",
-  "description": "Claude Code style auto-memory plugin for DeepSeek Harness: typed memory files + MEMORY.md index auto-injected into the system prompt",
+  "version": "1.6.0",
+  "description": "Auditable memory for DeepSeek Harness: 4-state trust machine + verbatim evidence chains + recall funnel + 4-layer evals. Plain Markdown, zero servers, zero embeddings.",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",

@@ -179,7 +179,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence, supersededBy, supersedes } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence, supersededBy, supersedes, validUntil } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -218,6 +218,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       ...(parsedEvidence !== undefined ? { evidence: parsedEvidence } : {}),
       ...(asLineage(supersededBy) !== undefined ? { supersededBy: asLineage(supersededBy)! } : {}),
       ...(asLineage(supersedes) !== undefined ? { supersedes: asLineage(supersedes)! } : {}),
+      ...(asMs(validUntil) !== undefined ? { validUntil: asMs(validUntil)! } : {}),
       ...(parsedOrigin !== undefined ? { origin: parsedOrigin } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
@@ -245,6 +246,8 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     // #19 演化谱系(扁平两个 string;与 status 同款条件落盘)
     ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
     ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
+    // 有效期(1.6.0):条件落盘,缺省 = 永久
+    ...(record.validUntil !== undefined && record.validUntil > 0 ? { validUntil: record.validUntil } : {}),
     // 导入溯源(嵌套块):字段名短、YAML 正确转义;缺省即普通记忆
     ...(record.origin !== undefined ? {
       origin: {
@@ -298,7 +301,9 @@ export function renderIndexBody(records: MemoryRecord[]): string {
   const visible = records.filter(record =>
     record.disabled !== true
     && record.status !== 'disputed'
-    && record.status !== 'superseded')
+    && record.status !== 'superseded'
+    // 有效期(1.6.0):过期不注入——与 disabled 同款"隐藏不删除",续期即恢复
+    && !isExpired(record, Date.now()))
   const ordered = [...visible].sort((a, b) => {
     const pa = a.pinned === true ? 0 : 1
     const pb = b.pinned === true ? 0 : 1
@@ -329,6 +334,15 @@ export function isStale(record: MemoryRecord, staleAfterDays: number, nowMs: num
   const updated = record.updatedMs ?? record.createdMs
   if (updated === undefined) return false // 无生命周期元数据的旧文件不参与
   return nowMs - updated > staleAfterDays * 86_400_000
+}
+
+/**
+ * 判断一条记忆是否已过有效期(1.6.0;纯函数,可测)。
+ * 语义与 disabled/stale 同族:**隐藏不删除**——不注入、文件保留、可续期复活。
+ * 不豁免 pinned:用户显式设的保质期是最强信号(不想过期就别设)。
+ */
+export function isExpired(record: MemoryRecord, nowMs: number): boolean {
+  return record.validUntil !== undefined && record.validUntil > 0 && record.validUntil <= nowMs
 }
 
 // ---------- P0.5 安全包:写入脱敏与协议标签防护 ----------
@@ -371,6 +385,23 @@ export function redactSecrets(text: string): string {
     out = out.replace(re, match => (kind === 'id-card' && !isValidIdCard(match) ? match : `[REDACTED:${kind}]`))
   }
   return out
+}
+
+/**
+ * 计数将被脱敏的密钥命中数(1.6.0 透明告警):写入方(模型会话)感知"发生过
+ * 泄漏尝试"——静默脱敏保住了内容安全,但调用方值得知道刚才那段文本里有真
+ * 密钥(id-card 只计校验位通过的,与 redactSecrets 判定同口径)。
+ */
+export function detectSecrets(text: string): number {
+  let hits = 0
+  for (const { kind, re } of SECRET_PATTERNS) {
+    re.lastIndex = 0 // 全局正则复用防御(matchAll 不受影响,稳妥起见)
+    for (const match of text.matchAll(re)) {
+      if (kind === 'id-card' && !isValidIdCard(match[0])) continue
+      hits += 1
+    }
+  }
+  return hits
 }
 
 /**
@@ -421,14 +452,18 @@ export const DEFAULT_IMPORTANCE: Readonly<Record<MemoryType, number>> = {
 
 /**
  * 三因子评分(纯函数):importance × recency(0.995^天,天粒度取整保证当日稳定,
- * 不破坏 KV 前缀缓存)。relevance 需查询上下文,仅用于读取场景,不进注入排序。
+ * 不破坏 KV 前缀缓存)× readsBoost(1.6.0 引用闭环:高频召回温和晋升,上限
+ * ×4——"被模型反复主动取阅"是价值信号,但热门不该挤死新记忆)。
+ * relevance 需查询上下文,仅用于读取场景,不进注入排序。
+ * KV 注:reads 变化必然伴随文件写入(touch),重排合法——无写入时分数逐字节稳定。
  */
 export function memoryScore(record: MemoryRecord, nowMs: number): number {
   const importance = record.importance ?? DEFAULT_IMPORTANCE[record.type]
+  const readsBoost = 1 + 0.15 * Math.min(record.reads ?? 0, 20)
   const anchor = record.lastReadMs ?? record.updatedMs ?? record.createdMs
-  if (anchor === undefined) return importance // 无时间锚的旧文件:只看重要度
+  if (anchor === undefined) return importance * readsBoost // 无时间锚的旧文件:重要度×引用
   const days = Math.max(0, Math.floor((nowMs - anchor) / 86_400_000))
-  return importance * Math.pow(0.995, days)
+  return importance * Math.pow(0.995, days) * readsBoost
 }
 
 /**
@@ -584,6 +619,11 @@ export class MemoryStore {
         : existing?.origin
       // origin/onlyIfAbsent 是 write 入参专用字段,不落盘;先剥离再展开
       const fields: Omit<MemoryRecord, 'scope' | 'origin'> = record
+      // 有效期透传(1.6.0):显式传值优先(0 = 清除哨兵);未传继承 existing
+      // ——置顶/停用等元数据写不得剥掉既有保质期(与 pinned 同款继承纪律)
+      const validUntil = record.validUntil !== undefined
+        ? (record.validUntil > 0 ? record.validUntil : undefined)
+        : existing?.validUntil
       const next: MemoryRecord = {
         ...fields,
         ...(pinned === true ? { pinned: true } : {}),
@@ -604,6 +644,8 @@ export class MemoryStore {
         ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
         scope,
       }
+      if (validUntil === undefined) delete next.validUntil // 哨兵 0/显式清除:键不落盘
+      else next.validUntil = validUntil
       written = next
       await writeFileAtomic(file, serializeMemory(next), { mode: 0o600, dirMode: 0o700 })
       await this.rebuildIndex(scope, cwd)
@@ -755,17 +797,26 @@ export class MemoryStore {
    * 写/删(审查确认的 major)。此处超时后检查锁内 pid:持有进程已死则回收重试一次。
    */
   /** 全量重建指定作用域的 MEMORY.md(须持锁调用);删空时移除索引文件。
-   *  软淘汰:staleAfterDays>0 时,陈旧零引用的记忆不进索引(文件保留,memory_list 可见)。 */
+   *  软淘汰:staleAfterDays>0 时,陈旧零引用的记忆不进索引(文件保留,memory_list 可见)。
+   *  1.6.0:过期(validUntil)同款隐藏;且内容不变时跳过落盘(幂等写)——会话启动
+   *  的无条件刷新不再产生 mtime 抖动,注入读到的索引字节稳定(KV 前缀缓存不因
+   *  空刷新断裂;审查确认的竞态修复)。 */
   private async rebuildIndex(scope: MemoryScope, cwd?: string): Promise<void> {
     const dir = this.dir(scope, cwd)
     const records = await this.list(scope, cwd)
-    const visible = records.filter(record => !isStale(record, this.staleAfterDays, Date.now()))
+    const now = Date.now()
+    const visible = records.filter(record =>
+      !isStale(record, this.staleAfterDays, now)
+      && !isExpired(record, now))
     const indexFile = join(dir, INDEX_FILENAME)
     if (visible.length === 0) {
       await fsp.rm(indexFile, { force: true })
       return
     }
-    await writeFileAtomic(indexFile, renderIndexBody(visible), { mode: 0o600, dirMode: 0o700 })
+    const next = renderIndexBody(visible)
+    const current = await fsp.readFile(indexFile, 'utf8').catch(() => null)
+    if (current === next) return
+    await writeFileAtomic(indexFile, next, { mode: 0o600, dirMode: 0o700 })
   }
 
   /**

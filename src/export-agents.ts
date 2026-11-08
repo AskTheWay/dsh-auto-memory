@@ -9,6 +9,7 @@
  */
 
 import type { MemoryRecord, MemoryScope } from './types.ts'
+import { isExpired } from './store.ts'
 
 /** 导出条目(面板可见的形状)。 */
 export interface AgentExportItem {
@@ -31,7 +32,12 @@ export function renderAgentsExport(items: AgentExportItem[], dateISO: string): s
   return `${lines.join('\n')}\n`
 }
 
-/** 过滤信任态:status 缺省或 verified;其余(candidate/disputed/superseded)不导。 */
+/**
+ * 过滤信任态:status 缺省或 verified;其余(candidate/disputed/superseded)不导。
+ * 1.6.0 审查修复:已过有效期的记忆一并排除——停注的时效事实被导成 AGENTS.md
+ * 指令就是"过期事实永久化",与保质期语义直接相悖。
+ */
 export function trustedForExport(records: MemoryRecord[]): MemoryRecord[] {
-  return records.filter(r => r.status === undefined || r.status === 'verified')
+  const now = Date.now()
+  return records.filter(r => (r.status === undefined || r.status === 'verified') && !isExpired(r, now))
 }

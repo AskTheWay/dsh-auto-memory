@@ -73,6 +73,12 @@ export interface MemoryRecord {
   supersededBy?: string
   /** #19 演化谱系:本条(新)取代了哪条旧记忆(值=旧记忆 name;固化矛盾检测写入)。 */
   supersedes?: string
+  /**
+   * 有效期(1.6.0「记忆也有保质期」):epoch ms;到期后**不注入**(与软停用/
+   * 软淘汰同款"隐藏不删除"——文件保留、memory_read 可读、面板可见),体检
+   * 榜引导用户续期或清除。缺省 = 永久。写入哨兵 0 = 显式清除(仅路由层用)。
+   */
+  validUntil?: number
   /** 导入溯源(缺省 = 非导入记忆);仅导入桥写入,撤销导入据此判定。 */
   origin?: MemoryOrigin
   /** 生命周期元数据(P1 遗忘策略用;旧文件缺省时由解析层补全)。 */

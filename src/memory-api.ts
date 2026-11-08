@@ -17,7 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
-import { MemoryStore, INDEX_FILENAME, isStale, memoryScore, parseMemory, projectKey } from './store.ts'
+import { MemoryStore, INDEX_FILENAME, isStale, isExpired, memoryScore, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
 import { descriptionSimilarity } from './matching.ts'
 import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
@@ -41,6 +41,10 @@ export interface PanelMemory {
   disabled: boolean
   /** 软淘汰命中:文件仍存在,但重建索引时不会进入注入(面板需与"生效"区分)。 */
   stale: boolean
+  /** 已过有效期(1.6.0):不注入、文件保留,面板引导续期/清除。 */
+  expired: boolean
+  /** 有效期(epoch ms;缺省 = 永久)。 */
+  validUntilMs?: number
   /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
   status?: MemoryStatus
   /** #19 谱系:本条被哪条记忆取代(仅 superseded 态;面板跳转后继)。 */
@@ -126,6 +130,8 @@ async function readGroup(
       pinned: record.pinned === true,
       disabled: record.disabled === true,
       stale: isStale(record, staleAfterDays(), now),
+      expired: isExpired(record, now),
+      ...(record.validUntil !== undefined ? { validUntilMs: record.validUntil } : {}),
       ...(record.status !== undefined ? { status: record.status } : {}),
       ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
       ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
@@ -178,11 +184,13 @@ export interface HealthReport {
   zombies: Array<{ name: string, scope: MemoryScope, slug: string, ageDays: number }>
   /** 矛盾嫌疑:跨层同名 + 同层近重复(description 相似度 ≥0.9)。 */
   conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate', a: { name: string, scope: MemoryScope }, b: { name: string, scope: MemoryScope } }>
+  /** 已过期(1.6.0):过了 validUntil 停止注入——续期(再给 N 天)或清除。 */
+  expired: Array<{ name: string, scope: MemoryScope, slug: string, expiredDays: number }>
 }
 
 /** 聚合体检三榜(纯函数便于测试;conflicts 的两两比对按 scope 分组、每组限 200 条)。 */
 export function buildHealthReport(entries: Array<{ record: MemoryRecord, scope: MemoryScope, slug: string }>, now = Date.now()): HealthReport {
-  const report: HealthReport = { unverified: [], zombies: [], conflicts: [] }
+  const report: HealthReport = { unverified: [], zombies: [], conflicts: [], expired: [] }
   for (const { record, scope, slug } of entries) {
     if (record.status === 'candidate') {
       report.unverified.push({ name: record.name, scope, slug, hasEvidence: record.evidence !== undefined })
@@ -190,6 +198,10 @@ export function buildHealthReport(entries: Array<{ record: MemoryRecord, scope: 
     const ageDays = record.createdMs !== undefined ? Math.floor((now - record.createdMs) / 86_400_000) : 0
     if ((record.reads ?? 0) === 0 && ageDays > 30 && record.status !== 'disputed' && record.status !== 'superseded') {
       report.zombies.push({ name: record.name, scope, slug, ageDays })
+    }
+    // 已过期(1.6.0):disputed/superseded 已有归宿,不重复报告
+    if (isExpired(record, now) && record.status !== 'disputed' && record.status !== 'superseded') {
+      report.expired.push({ name: record.name, scope, slug, expiredDays: Math.floor((now - (record.validUntil ?? now)) / 86_400_000) })
     }
   }
   // 跨层同名:user 层与项目层同名(findIn 的优先级语义让两者命运取决于查询
@@ -405,6 +417,8 @@ export function registerMemoryApi(
           description: string; type: MemoryType; body: string; pinned?: boolean; disabled?: boolean
           status?: MemoryStatus
           supersedes?: string
+          /** 有效期(1.6.0):epoch ms;0 = 清除(永久);缺省 = 不变(继承) */
+          validUntilMs?: number
         }
         const cwd = body.scope === 'project' ? body.cwd : undefined
         if (body.scope === 'project' && (cwd === undefined || cwd.length === 0)) {
@@ -434,6 +448,8 @@ export function registerMemoryApi(
         // 谱系字段双向透传(#19):面板 restore 需能显式清 supersedes(空串=
         // 清除,断链两侧同步;undefined=不改)
         ...(body.supersedes !== undefined ? { supersedes: body.supersedes.length > 0 ? body.supersedes : undefined } : {}),
+          // 有效期(1.6.0):透传 epoch;0 = 清除哨兵(store 侧统一语义)
+          ...(body.validUntilMs !== undefined ? { validUntil: body.validUntilMs } : {}),
           description: body.description.trim().slice(0, 160),
           type: body.type,
           body: typeof body.body === 'string' ? body.body.slice(0, 2000) : '',

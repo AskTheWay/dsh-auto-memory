@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.6.0] - 2026-11-08
+
+### Added
+
+- **Memory shelf life** (`validUntil`, the "still-true" answer): time-sensitive
+  facts — plans with dates, prices, versions, schedules — can carry an expiry.
+  Expired memories stop being injected (hidden, not deleted — same family as
+  mute/stale), surface on a fourth health board with one-click **renew 90d**,
+  and the editor gained a shelf-life field. Consolidation prompts the model to
+  set days only for genuinely time-sensitive facts; `memory_write` takes
+  `validUntilDays` (0 clears). Session-start index refresh is now
+  unconditional so expiries take effect without new writes.
+- **Recall-feedback ranking**: the reads counter now feeds back into injection
+  ordering — a gentle multiplier (1 + 0.15×reads, capped ×4) promotes memories
+  the model actually keeps pulling, without letting hot items bury fresh ones.
+  KV-safe: scores only change on file writes.
+- **Secret-write transparency**: writes carrying high-confidence secrets were
+  already redacted at the store choke point — the model now gets an explicit
+  receipt ("N secret(s) detected and redacted; do not store credentials"),
+  turning silent sanitization into a teachable moment.
+- **CJK contradiction fixtures**: the evolution-lineage contradiction detector
+  gained common CJK units (元/岁/人/条/万 — Chinese date sets were already
+  supported) plus fixtures pinning both, closing a real gap in the plugin's
+  home language.
+
 ## [1.5.0] - 2026-11-08
 
 ### Changed
