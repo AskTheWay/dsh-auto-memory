@@ -30,6 +30,24 @@ page (generated from this file at publish time).
   gained common CJK units (元/岁/人/条/万 — Chinese date sets were already
   supported) plus fixtures pinning both, closing a real gap in the plugin's
   home language.
+- **Lazy query freezing** for relevance-ranked truncation: the frozen
+  per-session word set is now captured at the *first truncation* instead of
+  right after the first user message — budget-fitting sessions never freeze
+  at all, and the intended "last 6 user messages" window finally sees more
+  than one line. Same KV semantics (the injected text still changes exactly
+  once per session).
+- **Eval system restructured around budget decoupling**: capability
+  measurements no longer contaminated by truncation effects, and budget
+  research is an explicit axis. L2 runners take `--budget capacity|product`
+  (256KB unconstrained vs the real 4096 default) and write to separate
+  result files; the LongMemEval runner also gained `--concurrency`
+  (question-level parallelism, 30 questions in ~22 min). The capacity
+  re-run delivered the decisive split: **43.3% overall vs 20.0% product**
+  — budget truncation costs a quantified 23pp; knowledge-update flips
+  0/5→4/5 (needles were consolidated but truncated out), while
+  multi-session stays 0/8 (consolidation-layer boundary, budget-independent).
+  `evals/README` rewritten as a three-axis model with per-axis questions,
+  metrics, known boundaries, and a gap roadmap.
 
 ## [1.5.0] - 2026-11-08
 

@@ -1,12 +1,19 @@
 /**
- * LongMemEval-S 子集评测(1.0 A 线:行业基准对齐):
+ * LongMemEval-S 子集评测(系统效果轴 · 行业基准对齐):
  *   官方 cleaned 数据(hf-mirror 通道,277MB,500 题)→ 按 6 类型分层抽样 N=30
- *   → 每题:~50 个历史会话逐会话过本插件固化管线 → 4KB 预算注入索引 → 问答
+ *   → 每题:~50 个历史会话逐会话过本插件固化管线 → 注入索引 → 问答
  *   → 官方 5 套 judge 模板二值判定(yes/no,temperature 0)
  *   → Task-averaged Accuracy(6 类均值,论文主指标)+ Overall + Abstention 单列
  *
+ * 预算口径(评测体系重构:能力与预算解耦):
+ *   --budget capacity  默认。256KB——索引预算不构成约束,测「记忆能力」的真实
+ *                      上限(检索/固化质量),不被截断效应污染。
+ *   --budget product   4096——真实默认预算,测含截断效应的产品体验;与
+ *                      needle-probe(预算压力层)配合解读。
+ *   两口径结果分文件落盘(*.capacity.json / *.product.json),不互相覆盖。
+ *
  * 用法:
- *   node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json 路径> [--n 30] [--seed 20261] [--limit 2(试跑)]
+ *   node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json 路径> [--n 30] [--seed 20261] [--limit 2(试跑)] [--budget capacity|product] [--concurrency 3]
  *   数据获取(唯一实测可靠通道,hf 官方域名被 DNS 污染):
  *   curl -L -o s_cleaned.json https://hf-mirror.com/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
  * 诚实声明:judge=deepseek-chat(官方为 gpt-4o-2024-08-06),分数与官方数字
@@ -128,15 +135,27 @@ const byType = new Map()
 for (const r of sample) byType.set(r.question_type, (byType.get(r.question_type) ?? 0) + 1)
 console.log('  分层:', [...byType.entries()].map(([t, c]) => `${t}:${String(c)}`).join(' '))
 
-const CONFIG = { maxBytes: 4096, enableUserScope: false, autoSummarize: false }
+// 预算口径(评测体系重构):capacity=256KB 不构成约束(测能力上限);product=4096
+// 真实默认(测含截断的产品体验)。结果分文件落盘,防止两口径互相覆盖。
+const BUDGET_MODE = arg('budget', 'capacity')
+const MAX_BYTES = BUDGET_MODE === 'product' ? 4096 : 262144
+const RESULT_FILE = BUDGET_MODE === 'product' ? 'l2-longmemeval.product.json' : 'l2-longmemeval.capacity.json'
+const CONFIG = { maxBytes: MAX_BYTES, enableUserScope: false, autoSummarize: false }
 const CWD = '/longmemeval'
-const results = []
 const t0 = Date.now()
 
 const targets = LIMIT > 0 ? sample.slice(0, LIMIT) : sample
-for (let qi = 0; qi < targets.length; qi++) {
-  const item = targets[qi]
-  const label = `[${String(qi + 1)}/${String(targets.length)}] ${item.question_id} (${item.question_type}${item.question_id.endsWith('_abs') ? '/abs' : ''})`
+
+/**
+ * 并发度(题级):题与题之间独立 store,可安全并行;题内 50 会话固化必须串行
+ * (跨会话查重/更新语义是被测路径本身)。默认 1=旧行为;--concurrency 3 实测
+ * 把 30 题压到 ~25 分钟。API 限速内 3-5 均可。
+ */
+const CONCURRENCY = Math.max(1, Number(arg('concurrency', 1)))
+
+/** 跑单题:固化(逐会话,串行) → 注入 → 问答 → judge。返回结果行。 */
+async function runOne(item) {
+  const label = `${item.question_id} (${item.question_type}${item.question_id.endsWith('_abs') ? '/abs' : ''})`
   const root = await mkdtemp(join(tmpdir(), 'lme-'))
   try {
     const store = new MemoryStore(root)
@@ -206,12 +225,35 @@ for (let qi = 0; qi < targets.length; qi++) {
     const verdictRaw = await chat([{ role: 'user', content: judgePrompt(item.question_type, item.question_id, item.question, item.answer, hypothesis) }], 10)
     const correct = verdictRaw.toLowerCase().includes('yes')
     const memoryCount = (await store.listAll(CWD)).length
-    results.push({ question_id: item.question_id, question_type: item.question_type, abs: item.question_id.endsWith('_abs'), correct })
-    console.log(`  ${label} → ${correct ? '✓' : '✗'} (记忆 ${String(memoryCount)} 条, ${String(Math.round((Date.now() - t0) / 1000))}s 累计)`)
+    return { question_id: item.question_id, question_type: item.question_type, abs: item.question_id.endsWith('_abs'), correct, memoryCount }
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 }
+
+// ---- 调度:题级 worker pool(题间独立可并行;进度按完成序打印,结果按原序落盘) ----
+const results = Array.from({ length: targets.length })
+let done = 0
+let next = 0
+const worker = async () => {
+  while (next < targets.length) {
+    const qi = next
+    next += 1
+    const item = targets[qi]
+    let row
+    const started = Date.now()
+    try {
+      row = await runOne(item)
+    } catch (error) {
+      // 单题失败(固化重试耗尽等)不炸全程:记错误行,该题按错计
+      row = { question_id: item.question_id, question_type: item.question_type, abs: item.question_id.endsWith('_abs'), correct: false, error: String(error).slice(0, 120) }
+    }
+    results[qi] = row
+    done += 1
+    console.log(`  [${String(done)}/${String(targets.length)}] ${row.question_id} (${row.question_type}${row.abs ? '/abs' : ''}) → ${row.correct ? '✓' : '✗'} (记忆 ${String(row.memoryCount ?? '-')} 条, 单题 ${String(Math.round((Date.now() - started) / 1000))}s, 累计 ${String(Math.round((Date.now() - t0) / 1000))}s)${row.error !== undefined ? ` ⚠ ${row.error}` : ''}`)
+  }
+}
+await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker()))
 
 // ---- 指标:Task-averaged(6 类均值,论文主指标)+ Overall + Abstention ----
 const byTypeResult = new Map()
@@ -232,6 +274,7 @@ const abstention = absRows.length === 0 ? 0 : absRows.filter(r => r.correct).len
 
 const result = {
   benchmark: 'LongMemEval-S (cleaned) subset', model: MODEL, judge: MODEL, date: new Date().toISOString(),
+  budgetMode: BUDGET_MODE, maxBytes: MAX_BYTES,
   subset: { n: results.length, seed: SEED, sampling: 'stratified by question_type, 3 abs included' },
   metrics: {
     taskAveragedAccuracy: Number((taskAveraged * 100).toFixed(1)),
@@ -241,7 +284,8 @@ const result = {
   },
   rows: results,
 }
-console.log(`\n[LongMemEval-S] Task-avg ${result.metrics.taskAveragedAccuracy}% | Overall ${result.metrics.overallAccuracy}% | Abstention ${result.metrics.abstentionAccuracy}%`)
+console.log(`\n[LongMemEval-S · ${BUDGET_MODE}(${String(MAX_BYTES)}B)] Task-avg ${result.metrics.taskAveragedAccuracy}% | Overall ${result.metrics.overallAccuracy}% | Abstention ${result.metrics.abstentionAccuracy}%`)
 console.log('     分项:', JSON.stringify(result.metrics.perType))
 await mkdir(join(HERE, '..', 'results'), { recursive: true })
-await writeFile(join(HERE, '..', 'results', 'l2-longmemeval.json'), JSON.stringify(result, null, 2) + '\n', 'utf8')
+await writeFile(join(HERE, '..', 'results', RESULT_FILE), JSON.stringify(result, null, 2) + '\n', 'utf8')
+console.log(`     → ${RESULT_FILE}`)

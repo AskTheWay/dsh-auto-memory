@@ -71,7 +71,12 @@ for (const session of dataset.sessions) {
 
 // ---- 阶段 2:双组问答 ----
 console.log('阶段 2/3:探针问答(WITH / WITHOUT 双组)')
-const CONFIG = { maxBytes: 4096, enableUserScope: true, autoSummarize: false }
+// 预算口径(评测体系重构):standard/mini 场景记忆量小(个位数条),4096 从不
+// 触发截断——capacity/product 两口径在本数据集等价;参数化只为纪律统一。
+// 场景一旦换大记忆库,--budget product 才开始测截断效应。
+const argIdx = (name) => process.argv.indexOf(`--${name}`)
+const BUDGET_MODE = argIdx('budget') >= 0 ? process.argv[argIdx('budget') + 1] : 'capacity'
+const CONFIG = { maxBytes: BUDGET_MODE === 'product' ? 4096 : 262144, enableUserScope: true, autoSummarize: false }
 const cwds = [...new Set(dataset.persona.workspaces)]
 const withIndex = cwds.map(cwd => renderMemoryIndexText(store, CONFIG, cwd)).filter(t => t.length > 0).join('\n\n')
 const emptyStore = new MemoryStore(await mkdtemp(join(tmpdir(), 'l2-empty-')))

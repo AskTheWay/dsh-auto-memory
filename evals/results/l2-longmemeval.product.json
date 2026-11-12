@@ -202,5 +202,8 @@
       "abs": false,
       "correct": false
     }
-  ]
+  ],
+  "budgetMode": "product",
+  "maxBytes": 4096,
+  "note": "历史跑次,重标口径:当时固定 4096(评测体系重构前的默认);重构后 product 口径经 --budget product 复现"
 }

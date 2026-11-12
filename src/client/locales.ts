@@ -146,7 +146,7 @@ export const zh = {
   presetCompanionTip: '16 KB 预算 / 门槛 1——保留生活事实,把 dsh 当日常助理',
   presetActive: '当前',
   setMaxBytes: '索引预算',
-  setMaxBytesHint: '每次请求注入索引的上限(KB);空库始终零占用',
+  setMaxBytesHint: '每次注入的总上限,含写入指导等固定开销(构成见顶部用量条);空库始终零占用',
   setMinImportance: '价值门槛',
   setMinImportanceHint: '固化候选低于此分不落盘(0 = 关);越高越挑',
   setStaleDays: '软淘汰(天)',
@@ -189,6 +189,9 @@ export const zh = {
   validUntilField: '有效期(天)',
   validUntilHint: '时效性事实的保质期,到期停止注入。填数字 = 设置/续期;清空已填的数字 = 改为永久;不改动则保持现状',
   validUntilNone: '永久',
+  usageIdx: '索引',
+  usageFixed: '固定',
+  usageFixedTip: '写入指导等固定开销(不随记忆增长,计入注入上限)',
 } as const
 
 export type PluginMemoryLocaleKey = keyof typeof zh
@@ -336,7 +339,7 @@ export const en: Record<PluginMemoryLocaleKey, string> = {
   presetCompanionTip: '16 KB budget / gate 1 — keep life facts, treat dsh as a daily assistant',
   presetActive: 'active',
   setMaxBytes: 'Index budget',
-  setMaxBytesHint: 'Per-request cap on the injected index (KB); an empty store always costs zero',
+  setMaxBytesHint: 'Total cap per injection, including fixed overhead (write guidance; see the usage bar up top); an empty store always costs zero',
   setMinImportance: 'Value gate',
   setMinImportanceHint: 'Consolidation candidates below this score never land (0 = off); higher = pickier',
   setStaleDays: 'Soft eviction (days)',
@@ -379,4 +382,7 @@ export const en: Record<PluginMemoryLocaleKey, string> = {
   validUntilField: 'Shelf life (days)',
   validUntilHint: 'For time-sensitive facts; stops being injected after expiry. Enter a number to set/renew; clear a previous number to make it permanent; leave untouched to keep as-is',
   validUntilNone: 'permanent',
+  usageIdx: 'index',
+  usageFixed: 'fixed',
+  usageFixedTip: 'fixed overhead (write guidance etc.; does not grow with memories; counted inside the cap)',
 }

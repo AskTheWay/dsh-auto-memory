@@ -526,7 +526,9 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
   }, 'dsh-auto-memory consolidation')
 
   return {
-    // 词集原料:最近 6 条 USER 行(剥前缀),拼接截 1200 字符防词集膨胀
+    // 词集原料:最近 6 条 USER 行(剥前缀),拼接截 1200 字符防词集膨胀。
+    // 1.6.0 起注入侧懒冻结(首次截断才取值)——此刻窗口通常已有多条 USER,
+    // 6 条窗口真正兑现;此前冻结发生在首条 USER,窗口恒为 1 条(设计残留)
     getQueryText: sessionId => {
       const cap = captures.get(sessionId)
       if (cap === undefined) return undefined

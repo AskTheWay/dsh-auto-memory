@@ -1,116 +1,146 @@
-# evals/ — 记忆插件评测(方法学,非打榜)
+# evals/ — 评测体系(三轴 + 预算解耦)
 
 > 定位声明:本评测**不参与 LoCoMo 类打榜**(金标/judge 争议大,同系统分差 ±20)。
-> 我们发布的是"轻量文件型记忆的**确定性指标层**":无 LLM、无 API key、结果
-> 100% 可复现,随 `npm test` 在 CI 中作为回归护栏运行。
+> 我们发布的是可复现的对照测量:同一 judge 下与自身 baseline 的差异、
+> 机制开关前后的差异、预算口径之间的差异。
 > 背景与完整调研见 [docs/landscape-2026-09.md](../docs/landscape-2026-09.md)。
 
-## 分层
+## 预算解耦原则(本体系的核心纪律)
 
-| 层 | 内容 | 依赖 | 状态 |
+**能力测量不得被预算截断效应污染;预算研究必须显式声明场景。**
+
+记忆系统的两个维度经常被混在一起报分:「检索/固化能力上限」和「在 4KB
+预算下的实际保留」。混报的后果:LongMemEval 首跑的 23.3% 里,针位探针
+事后证明相当一部分是「80 条记忆挤 14 行索引」的截断效应——那是预算行为,
+不是记忆能力。因此所有注入类评测分两个口径,结果分文件落盘、不互相覆盖:
+
+| 口径 | 注入预算 | 测什么 | 用法 |
 |---|---|---|---|
-| **L0 确定性指标** | 注入预算曲线 / 信噪比 / 淘汰零误杀 / 链接展开边界 | 无(纯计算) | ✅ `l0/`,随 CI 跑 |
-| **L1 注入召回** | 合成数据集金标直写 → 逐 probe 注入可达性 | 无 API | ✅ `runners/l1-retrieval.mjs`(mini 与 standard 均 100%,完美固化上界) |
-| **L3 固化精度** | recall / precision / 污染率 / 更新正确率(真实 LLM 固化) | `DEEPSEEK_API_KEY`,≈会话数次调用 | ✅ `runners/l3-consolidation.mjs`(结果入 `results/`) |
-| **L2 端到端** | 固化 → 注入 → 双组(带/无记忆)探针问答 → 盲判;lift = 记忆净贡献 | `DEEPSEEK_API_KEY`,≈探针数×3 次调用 | ✅ `runners/l2-e2e.mjs`(结果入 `results/`) |
-| **L2-LongMemEval** | 行业基准对齐:LongMemEval-S cleaned 子集(30 题分层抽样),官方 5 套 judge 模板 | `DEEPSEEK_API_KEY`,30 题≈1560 次调用 | ✅ `runners/l2-longmemeval.mjs`(结果入 `results/`) |
+| **capacity**(默认) | 256KB,不构成约束 | 记忆能力上限(检索/固化质量,与预算无关) | `--budget capacity` |
+| **product** | 4096,真实默认 | 含截断效应的产品体验 | `--budget product` |
 
-**数据集**:`datasets/harness-sessions/`(`schema.md` 格式与质量红线;`mini` 手写 3 会话/12 题;`standard` 合成 10 会话/30 题含 6 拒答、4 ephemeral 陷阱、2 updated 推翻)。与 L0 的合成记忆构造器不同,这里的数据是**带金标标签的完整会话剧本**——coding-agent 语境(四类型记忆、双工作区、跨会话引用),LoCoMo/LongMemEval 均不覆盖。
+预算超限本身作为研究对象,只在**预算压力轴**(见下)显式进行。
 
-## L0 指标定义
+## 总览:三轴一横切
 
-### ① index-budget(注入预算曲线)
+| 轴 | 回答的问题 | runner | 预算条件 | 主指标 | 状态 |
+|---|---|---|---|---|---|
+| **A 机制正确性**(回归网,非评测) | 各机制按规格工作吗 | `tests/` + `l0/` 的 eviction/link 断言(224 tests,随 CI) | 不适用(直接断言行为) | 全绿 + KV-safe 字节断言 | ✅ |
+| **B 组件质量** | 检索、固化这两个零件准吗 | `runners/l1-retrieval.mjs`(金标直写→注入可达)/`runners/l3-consolidation.mjs`(真实 LLM 固化) | **无预算维度**(直测组件,不经注入) | L1 召回 100%;L3 recall/precision/duplicates/污染 | ✅ |
+| **C 系统效果** | 装上插件,agent 行为真的变好吗 | `runners/l2-e2e.mjs`(双组 lift)/`runners/l2-longmemeval.mjs`(行业基准对齐) | **双口径**(capacity/product) | lift;对齐分 | ✅(见下) |
+| **D 预算压力** | 预算超限时系统怎么取舍 | `l0/` 的 budget/snr 断言 + `runners/l2-needle-probe.mjs` | **显式 4096,本轴就是研究超限** | 保留率;针位三环节定位 | ✅ |
+| 横切:成本 | 代价多大 | (待办)所有 runner 输出 bytes/token 列 | 伴随维度 | 注入 bytes/次 | ⏳ 路线图 |
 
-固定 `maxBytes=4096`,注入 N 条合成记忆(确定性 seed)后测量整段注入体积。
+历史编号(L0/L1/L2/L3)为构建时间顺序,不再作为层级语义;文件名保留以免
+破坏 CI 与历史结果引用,对照见上表。
 
-**Baseline(2026-09-25,CI 持续回归)**:
+## 轴 A:机制正确性(回归网)
 
-| N(记忆数) | 注入字节 | 断言 |
-|---|---|---|
-| 20 | 4065 | ≤ 4096,全量保留 |
-| 50 | 4048 | ≤ 4096,截断生效 |
-| 100 | 4018 | ≤ 4096 |
-| 200 | 3940 | ≤ 4096,截断标记存在 |
+`npm test` 的 224 个确定性断言,含:状态机与证据链语义、有效期过滤与续期、
+readsBoost 数学、密钥检测口径、CJK 矛盾信号、KV-safe(同日无写入时注入
+字节逐相同)。**这不是评测,是回归网**——它保证「机制按规格工作」,
+轴 B/C/D 才在可信地基上测「规格本身好不好」。
 
-附带:软淘汰使过半超龄零引用记忆出局后注入体积相应回落;空库输出 0 字节(零占用硬保证)。
-**本指标已驱动一次真实修复**:预算语义从"仅索引"改为"索引+指导文本整段"(旧实现在拼接 policy 尾巴后可超预算 ~800B)。
+## 轴 B:组件质量(无预算维度)
 
-### ② injection-snr(注入信噪比,characterization)
+### L1 检索(`l1-retrieval.mjs`,无 API)
 
-探针集(每第 4 条标记)在预算截断后的保留率。
+金标记忆直写 → 逐 probe 断言注入可达。mini 与 standard 均 **100%**
+(完美固化上界——它测的是「检索不丢」,不测「固化会不会写出这些记忆」)。
 
-| 场景 | 探针保留 | 解读 |
-|---|---|---|
-| 预算充足(N=20) | 5/5 = 100% | 全量注入,信噪比=结构占比 |
-| 半量预算(N=50) | 5/13 ≈ 38% | 位置式截断 |
-| N=100 | 5/25 = 20% | 同上 |
-| N=200 | 5/50 = 10% | 同上 |
-| **半量预算 + 探针置顶(0.3.0)** | **≥ 80%** | **pinned 优先截断:评测驱动迭代的第一次数字移动** |
+### L3 固化(`l3-consolidation.mjs`,需 `DEEPSEEK_API_KEY`)
 
-**已知局限(有意钉板)**:未置顶时截断按索引行序(name 字典序),与相关性无关;
-预算恒定 → 保留条数恒定(~20 条),探针均匀分布时保留绝对数也恒定。
-**0.3.0 的 pinned 优先排序已在同预算下把置顶探针保留率提升至 ≥80%**
-(同一 seed、同一批记忆、同一预算的对照断言,见 injection-snr.spec.ts);
-完整的三因子相关性排序仍在路线图,届时更新本表。
+真实 LLM 固化 harness-sessions 剧本 → 对照金标算 recall/precision/
+duplicates/污染率(结果入 `results/`)。与 L2 共享同一条代码路径。
 
-### ③ eviction-correctness(淘汰零误杀)
+## 轴 C:系统效果(双口径)
 
-四类混合(超龄零引用 / 超龄已读 / 新写入 / 无元数据旧文件):
-只有第一类从注入索引隐藏;**文件层面零丢失**;被读一次即复活且此后豁免。
-断言误杀数 = 0(等价 MemoryBank R=e^(−t/S) 的"召回重置强度"语义)。
-
-### ④ link-expansion(链接展开边界)
-
-`[[name]]` 一层展开:上限 3 条并标记 truncated、自链排除、坏链接安全跳过、
-单次展开体积 ≤ 3×660 UTF-8 字节(有界性)。
-
-## L2 结果(2026-10-25,deepseek-chat)
-
-### 端到端双组对比(harness-sessions)
+### 端到端双组 lift(harness-sessions;capacity 口径,该场景两口径等价)
 
 | 数据集 | with 记忆 | baseline(无记忆) | **lift(净贡献)** | 拒答(with/without) |
 |---|---|---|---|---|
 | mini(3 会话/12 题) | 100% | 33.3% | **+66.7%** | 100% / 100% |
 | standard(10 会话/30 题) | 95.8% | 16.7% | **+79.2%** | 83.3% / 100% |
 
-baseline 的正确题几乎全是通用知识可蒙对的(psycopg2 常见坑/中文偏好);项目特定事实(压测预热/夜猫子时间/部署目标)无记忆时全错——lift 即记忆系统的净贡献。
+记忆量个位数,4096 从不触发截断——lift 测的是纯记忆能力贡献。
+baseline 答对的几乎全是通用知识可蒙对的;项目特定事实无记忆时全错。
 
-### LongMemEval-S 30 题分层抽样(接入官方协议的第一跑)
+### LongMemEval-S 对齐(双口径对照,同 30 题同种子)
 
-Task-averaged **33.9%** / Overall **23.3%** / Abstention **100%**(分项:ss-user 1/1,multi-session 0/8,temporal 0/8,knowledge-update 1/5,ss-assistant 1/3,ss-pref 1/2)。
+| 跑次 | 口径 | Overall | Task-avg | knowledge-update | multi-session |
+|---|---|---|---|---|---|
+| 首跑(2026-10-24) | product(4096) | 23.3% | 33.9% | 1/5 | 0/8 |
+| 1.3.0 复跑(2026-11-06) | product(4096) | 20.0% | 24.3% | 0/5 | 0/8 |
+| **capacity 对照(2026-11-11)** | **capacity(256KB,零截断)** | **43.3%** | **56.4%** | **4/5** | **0/8** |
 
-**低分是实测发现而非事故**——根因与本插件的设计边界完全一致:
+**预算效应占比首次量化:product→capacity = +23pp(翻倍)**。分项给出干净的机制分解:
 
-1. **场景错配**:LongMemEval 是"122k token 闲聊海捞针"(每题 ~50 会话),本插件的固化管线为编码会话的 durable 事实设计,在闲聊海上产出 ~109 条低价值记忆/题,4KB 预算只放 top 30 行,目标事实被挤出注入——**预算纪律在错误场景下就是错的**;
-2. **证据碎片化**:答案事实散在多会话,每会话独立固化导致碎片化,无跨会话合并;
-3. judge=deepseek-chat(官方 gpt-4o-2024-08-06),与官方数字不可比。
+- **knowledge-update 0/5 → 4/5**:这些题的针确实被固化入库,纯粹被 4KB 截断
+  挤出注入——针位探针(2133c1b5)判定的机制②被实验证实;预算放开后该类
+  几乎全对。ss-preference 0/2→2/2 同理
+- **multi-session 0/8 铁打不动**:跨会话聚合类在零截断下依然全灭——机制①
+  (固化层滤琐事+每会话独立固化导致碎片化)的专属领地,与预算无关
+- temporal-reasoning 1/8→2/8:小幅,时间推理主要输在固化不在注入
 
-这组数字如实钉板:它量化了"轻量编码场景记忆"与"长程对话海捞针"两个任务的距离,是"不参与打榜"定位声明的实证注脚。Abstention 100%(对不可答问题全部正确拒答)与 harness-sessions 的 +79.2% lift 共同构成完整画像:**本插件在它的目标场景(编码会话)净贡献显著,在非目标场景(闲聊海)不假装能打**。
+**结论(更新)**:低分不是单一原因——**预算纪律在 ~80 条记忆库下吃掉 23 个
+百分点**(这是 4KB 纪律的精确代价,产品定位下接受);**固化层的琐事过滤+
+碎片化咬掉 multi-session 全部**(设计取舍,海捞针基准的针正是编码场景
+要滤的东西)。两条边界各有实证坐标,product 口径的 20% 是两者叠加。
 
-### 1.3.0 管线复跑 + 针位探针(2026-11-06)——边界机制的两点定位
+诚实声明:judge=deepseek-chat(官方 gpt-4o-2024-08-06),分数与官方数字不
+严格可比;子集 30 题分层抽样(种子固定可复现,非全量 500)。定位是同一
+judge 下口径间与自身 baseline 的对照,不是榜单数字。
 
-价值过滤(#17)落地后用**同种子、同 30 题、runner 同步为产品同一条固化决策路径**复跑:
-**20.0% overall / 24.3% task-avg / abstention 100%**(基线 23.3%/33.9%)——n=30 下属噪声区间
-(±8pp),**分数未动**;记忆产量 109 → ~85 条/题(温和下降,远未达预期)。
-价值门槛没有兑现根因假设,于是用单题针位探针(runner 同管线 + 金标关键词逐环节定位)
-追到底,两道错题给出**两种不同的失败机制**:
+## 轴 D:预算压力(显式研究超限)
 
-| 环节 | 4bc144e2(multi-session) | 2133c1b5(knowledge-update) |
-|---|---|---|
-| 固化 | ✗ **针从未入库**(store 全量 grep 金标词 = 0 条)——每会话 8 条上限 + "durable facts" 指引恰好滤掉一次性琐事(洗车 $65),LongMemEval 的针**正是**我们设计上要滤掉的东西 | ✓ 针被完美固化(`user-harajuku-resident-3-months`:"住了三个月"=金标) |
-| 注入 | —(无物可注) | ✗ **80 条可见记忆挤进 14 行索引**,recency 衰减把旧针挤出;且基准协议**先注入后见题**,#18 相关性截断没有查询可用(结构性不适用) |
-| 问答 | 模型正确拒答(此题恰为 abstention 题) | 模型看着残缺信号**自信编造 "about one month"**——正是 1.0 可信体系防的"自信的错",但防线够不到(事实根本没进提示词) |
+### L0 确定性指标(`evals/l0/*.spec.ts`,随 CI)
 
-结论:边界不是"预算纪律错了",而是**两点机制**——①固化层按产品设计滤掉生活琐事(编码场景的正确取舍,海捞针基准的致命伤);②排序层 recency 对归档式语料方向反了(编码会话的正确取舍,旧针的天敌)。两者都是产品定位的自觉选择,如今有了精确的失效点坐标。修任何一个都意味着背叛目标场景——不修。
+**① index-budget(预算曲线)**:固定 4096,N 条合成记忆注入体积恒 ≤ 4096
+(N=20/50/100/200 全量断言);空库输出 0 字节。曾驱动真实修复(预算语义
+从「仅索引」改为「索引+指导文本整段」,旧实现超支 ~800B)。
+
+**② injection-snr(截断保留率)**:探针在截断后的保留率。
+无词集时排序为 pinned → 三因子(importance×recency×reads,1.6.0 起含引用
+乘子);有查询场景的保留由相关性排序决定(见 `tests/v13.spec.ts` 的
+重排语义断言)。历史基线:无置顶 38%→10%(随 N 增大),**置顶 ≥80%**
+(0.3.0 起的对照断言);三因子排序上线后该表的数字为 0.3.0 时代口径,
+重跑更新见路线图。
+
+**③ eviction-correctness(淘汰零误杀)**:四类混合场景只有「超龄零引用」
+被隐藏,文件零丢失,读一次即复活。
+
+**④ link-expansion(链接展开边界)**:一层展开上限 3 条并标记 truncated、
+自链排除、坏链接安全跳过、体积有界。
+
+### 针位探针(`l2-needle-probe.mjs`,需 key)
+
+单题三环节定位:固化入库 → 注入保留 → 问答判分,金标答案丢失在哪一环
+一目了然。是 LongMemEval 负发现机制分解的工具,也是本轴的显微镜。
+
+## 缺口路线图(按性价比)
+
+1. ~~**LongMemEval capacity 对照跑**~~ ✅ 已完成(2026-11-11,43.3% vs
+   product 20.0%,预算效应 +23pp 已量化,见轴 C)
+2. **成本口径入表**——各 runner 输出固定 bytes/token 列(注入开销 1KB 级
+   的叙事目前只在文档里)
+3. **judge 校准**——故意错答对照组测 judge 区分度(L2/L3 的 judge 从未
+   被校准过)
+4. **#20 真实编码会话盲测**——系统效果轴收官:先过程信号(15-20 真实
+   任务,测注入 token/误召回/重复检索),再结果 lift(100+ 任务)
+5. **生命周期 e2e 链**——写入→注入→召回→矛盾→取代→过期→续期一条
+   会话级全链路(目前只有单测碎片)
+6. **SNR 表重跑**——三因子+reads 排序下的保留率更新 0.3.0 时代基线
 
 ## 复现
 
 ```sh
-npm test          # L0 随全量测试运行(vitest 自动拾取 evals/l0/*.spec.ts)
-npm test && node evals/runners/l1-retrieval.mjs mini && node evals/runners/l1-retrieval.mjs standard
-DEEPSEEK_API_KEY=… node evals/runners/l3-consolidation.mjs mini
-DEEPSEEK_API_KEY=… node evals/runners/l2-e2e.mjs mini          # 端到端双组对比
-DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30
+npm test                          # 轴A + 轴D 的 L0 断言(vitest 自动拾取)
+node evals/runners/l1-retrieval.mjs mini && node evals/runners/l1-retrieval.mjs standard   # 轴B
+DEEPSEEK_API_KEY=… node evals/runners/l3-consolidation.mjs mini                            # 轴B
+DEEPSEEK_API_KEY=… node evals/runners/l2-e2e.mjs mini                                       # 轴C(capacity 默认)
+DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30            # 轴C capacity
+DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30 --budget product   # 轴C product
+DEEPSEEK_API_KEY=… node evals/runners/l2-needle-probe.mjs <question_id>                     # 轴D
 ```
 
 LongMemEval 数据获取(官方域名被 DNS 污染,hf-mirror 为实测可靠通道;277MB,不入库):
@@ -120,10 +150,7 @@ curl -L -o evals/datasets/longmemeval/s_cleaned.json \
   https://hf-mirror.com/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
 ```
 
-诚实声明:LongMemEval 子集为 30 题分层抽样(种子固定可复现,非官方全量 500);
-judge 为 deepseek-chat(官方默认 gpt-4o-2024-08-06)——分数与官方榜单数字不
-严格可比,定位是"同一 judge 下与自身 baseline 的对照"与"接入官方协议的
-方法论演示"。
-
-构造器(`helpers.ts` 的 seededRandom/makeMemories/seedStore)是未来
-L1/L3 合成数据集(harness-sessions:虚拟开发者多会话剧本)的地基。
+**数据集**:`datasets/harness-sessions/`(`schema.md` 格式与质量红线;mini
+手写 3 会话/12 题;standard 合成 10 会话/30 题含 6 拒答、4 ephemeral 陷阱、
+2 updated 推翻)——带金标标签的完整会话剧本,coding-agent 语境(四类型
+记忆、双工作区、跨会话引用),LoCoMo/LongMemEval 均不覆盖。

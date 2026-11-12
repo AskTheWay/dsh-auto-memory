@@ -254,9 +254,10 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
 /**
  * 挂载注入审计(section text 回调用):按会话对"注入集合签名"去重,
  * 变化即追加。返回 text(注入内容本身)——审计是副作用,绝不影响返回值。
- * getQueryText(#18):会话捕获查询器(固化 handle 提供);词集在首个非空值
- * 到达后冻结(per-session)——冻结后注入文本会话内字节稳定(KV-safe 的
- * 真正闸门;首 USER 前后注入文本恰变一次,与 memory_write 后索引变化同级)。
+ * getQueryText(#18):会话捕获查询器(固化 handle 提供);词集**懒冻结**——
+ * 只在首次真正发生截断的组装时刻取值并冻结(1.6.0 重设计;此前"第二次组装
+ * 冻结"只能看到第一条 USER,getQueryText 的 6 条窗口从未兑现)。冻结后
+ * 注入文本会话内字节稳定(KV-safe 的真正闸门)。
  */
 export function registerInjectionAudit(
   store: MemoryStore, config: Config, rootDir: string,
@@ -268,8 +269,8 @@ export function registerInjectionAudit(
   const frozenQuery = new Map<string, string>()
   return {
     text: (cwd, sessionId) => {
-    const query = sessionId !== undefined ? frozenQuery.get(sessionId) : undefined
-    const detail = renderMemoryIndexDetail(store, config, cwd, query)
+    let query = sessionId !== undefined ? frozenQuery.get(sessionId) : undefined
+    let detail = renderMemoryIndexDetail(store, config, cwd, query)
     if (detail.text.length === 0 || sessionId === undefined || cwd === undefined) {
       // 注入转空(会话中途 delete_all/删光):不记空事件,但必须复位该会话
       // 签名——否则空档后同名集合回归会被残留签名吞掉,真实再注入漏记(审查实测)。
@@ -277,11 +278,20 @@ export function registerInjectionAudit(
       if (sessionId !== undefined && detail.text.length === 0) lastSignature.delete(sessionId)
       return detail.text
     }
-    // 首个非空词集到达后的下一次组装冻结(system prompt 先于首 USER 组装,
-    // 首注入时 captures 必空——若按"首注入冻结"则永远冻结空词集)
-    if (query === undefined && sessionId !== undefined && getQueryText !== undefined) {
+    // 懒冻结(1.6.0 重设计,回应"冻结词集只见第一条 USER"的质疑):词集只在
+    // **第一次真正发生截断**的组装时刻才取值冻结——不超预算的会话词集根本
+    // 不参与输出,永远不冻结;首次截断通常发生在会话中段,彼时捕获窗口已有
+    // 多条 USER,getQueryText 的 slice(-6) 从"冻结后只见 1 条"的死窗口变成
+    // 真语义。冻结后本次组装即用词集序重算(KV 影响:注入文本仍是"会话内
+    // 恰变一次"——与旧实现"第二次组装切换词集序"同级,只是切换点推迟到
+    // 首次截断,且词集信息量严格更丰富)。
+    if (query === undefined && detail.truncated.length > 0 && sessionId !== undefined && getQueryText !== undefined) {
       const fresh = getQueryText(sessionId)
-      if (fresh !== undefined && fresh.trim().length > 0) frozenQuery.set(sessionId, fresh)
+      if (fresh !== undefined && fresh.trim().length > 0) {
+        frozenQuery.set(sessionId, fresh)
+        query = fresh
+        detail = renderMemoryIndexDetail(store, config, cwd, query)
+      }
     }
     const signature = `${cwd}\0${detail.injected.join(',')}\0|${detail.truncated.join(',')}`
     if (lastSignature.get(sessionId) === signature) return detail.text

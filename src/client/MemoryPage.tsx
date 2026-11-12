@@ -946,6 +946,12 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const injectedBytes = groups.reduce((sum, group) =>
     sum + (group.scope === 'user' || group.current === true ? group.indexBytes : 0), 0)
   const totalUsage = injectedBytes / budgetBytes
+  /** 顶条构成显示(1.6.0 透明化):固定开销 = maxBytes − 净预算,前端算零后端改动;
+   *  旧宿主无 budgetBytes 字段(回退=maxBytes)时差值为 0,自动降级单段显示 */
+  const fixedOverhead = Math.max(0, maxBytes - budgetBytes)
+  const usageTotalPct = maxBytes > 0 ? Math.min(100, Math.round(((injectedBytes + fixedOverhead) / maxBytes) * 100)) : 0
+  const fixedPct = maxBytes > 0 ? Math.min(100, (fixedOverhead / maxBytes) * 100) : 0
+  const idxPct = maxBytes > 0 ? Math.min(100 - fixedPct, (injectedBytes / maxBytes) * 100) : 0
   const userCount = groups.filter(g => g.scope === 'user').reduce((sum, group) => sum + group.memories.length, 0)
   const projectCount = total - userCount
   const visibleCount = visibleGroups?.reduce((sum, group) => sum + group.memories.length, 0) ?? 0
@@ -1305,9 +1311,12 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
         </div>
         <div className="dam-header-side">
           {/* 索引占用(全局信号,常驻——旧宿主降级无 tab 行时也可见,审查 minor 修复) */}
-          <span className="dam-usage" title={`${t('budget')} ${formatBytes(maxBytes)}`}>
-            <span className="dam-usage-label">{t('indexUsage')} {Math.round(totalUsage * 100)}% · {formatBytes(injectedBytes)}/{formatBytes(budgetBytes)}</span>
-            <span className="dam-usage-track"><i data-hot={totalUsage > 0.8 ? '1' : '0'} style={{ width: `${Math.min(100, totalUsage * 100)}%` }} /></span>
+          <span className="dam-usage" title={`${t('budget')} ${formatBytes(maxBytes)} · ${t('usageFixedTip')}`}>
+            <span className="dam-usage-label">{t('indexUsage')} {String(usageTotalPct)}% · {t('usageIdx')} {formatBytes(injectedBytes)}{fixedOverhead > 0 ? ` + ${t('usageFixed')} ${formatBytes(fixedOverhead)}` : ''} / {formatBytes(maxBytes)}</span>
+            <span className="dam-usage-track">
+              {fixedOverhead > 0 && <i className="dam-usage-fixed" style={{ width: `${String(Math.round(fixedPct))}%` }} />}
+              <i data-hot={usageTotalPct > 80 ? '1' : '0'} style={{ width: `${String(Math.round(idxPct))}%` }} />
+            </span>
           </span>
         </div>
         <div className="dam-header-actions">

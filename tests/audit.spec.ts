@@ -104,6 +104,25 @@ describe('registerInjectionAudit(按会话签名去重)', () => {
     expect(audit.text('/nowhere', 's1')).toBe('')
     expect(await readAudit(base)).toEqual([])
   })
+  it('词集懒冻结(1.6.0):未截断不取词集;首次截断才取并冻结;冻结后不再取', async () => {
+    // 一条小记忆:预算内,组装不发生截断 → getQueryText 不被调用
+    await store.write({ name: 'alpha', description: 'd', type: 'user', body: 'b' }, 'user')
+    let queryCalls = 0
+    const getQueryText = (): string => { queryCalls += 1; return '登录 缓存 重构' }
+    const audit = registerInjectionAudit(store, config, base, getQueryText)
+    audit.text('/w', 's1')
+    expect(queryCalls).toBe(0) // 预算内:词集根本不参与,不冻结
+    // 写到超预算(多行长 description 制造截断)→ 下一次组装截断发生 → 取词集冻结
+    for (let i = 0; i < 30; i++) {
+      await store.write({ name: `bulk-${String(i).padStart(2, '0')}`, description: `事实 ${'x'.repeat(60)}`, type: 'user', body: 'b' }, 'user')
+    }
+    audit.text('/w', 's1')
+    expect(queryCalls).toBe(1) // 首次截断:冻结时刻(彼时窗口可含多条 USER——懒冻结的意义)
+    audit.text('/w', 's1')
+    expect(queryCalls).toBe(1) // 已冻结:不再取
+    await audit.flush() // 排空在途审计落盘(Windows 下 teardown 与异步写竞争会 ENOTEMPTY)
+    audit.cleanup('s1')
+  })
 })
 
 describe('renderMemoryIndexDetail(注入/截断名单)', () => {

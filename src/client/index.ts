@@ -241,7 +241,13 @@ export const PANEL_CSS = `
 .dam-btn-danger:hover{color:#fff;opacity:.9;}
 .dam-usage{flex:1;min-width:150px;max-width:300px;}
 .dam-usage-label{font-size:10.5px;color:var(--dsw-alias-label-tertiary);display:block;margin-bottom:3px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.dam-usage-track{display:block;height:5px;border-radius:999px;background:var(--dsw-alias-border-l1);overflow:hidden;}
+.dam-usage-track{display:flex;height:5px;border-radius:999px;background:var(--dsw-alias-border-l1);overflow:hidden;}
+.dam-usage-track i{border-radius:0;}
+.dam-usage-track i:first-child{border-radius:999px 0 0 999px;}
+.dam-usage-track i:last-child{border-radius:0 999px 999px 0;}
+.dam-usage-track i:only-child,.dam-usage-track i:first-child:last-child{border-radius:999px;}
+/* 固定开销段:中性灰(常驻成本,与动态索引的蓝区分) */
+.dam-usage-fixed{background:var(--dsw-alias-border-l2);}
 .dam-usage-track i{display:block;height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary,#4d76e6);transition:width .2s ease;}
 .dam-usage-track i[data-hot="1"]{background:var(--dsw-alias-state-warn-primary,#d97706);}
 .dam-groups{display:flex;flex-direction:column;gap:10px;}
