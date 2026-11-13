@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { MemoryStore } from './store.ts'
 import { normalizeName, memoryScore, DEFAULT_IMPORTANCE, detectSecrets, isExpired } from './store.ts'
+import { indexByteBudget } from './prompt.ts'
 import { descriptionCoverage } from './matching.ts'
 import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
@@ -28,8 +29,8 @@ function parseExplicitScope(raw: string | undefined): MemoryScope | undefined {
 }
 
 /** 注册记忆工具。 */
-/** 注册记忆工具。enableUserScope 传**可变配置对象**(1.4.0 设置中心热切换;读时求值)。 */
-export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { enableUserScope: boolean }): void {
+/** 注册记忆工具。enableUserScope/maxBytes 传**可变配置对象**(1.4.0 设置中心热切换;读时求值)。 */
+export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { enableUserScope: boolean, maxBytes: number }): void {
   /** 当前部署可访问的作用域(user 层被配置禁用时从一切路径剔除)。 */
   const availableScopes = (): readonly MemoryScope[] => config.enableUserScope ? ['user', 'project'] : ['project']
 
@@ -91,6 +92,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         type: 'integer',
         description: 'Optional shelf life in days (1-3650) for time-sensitive facts (plans, prices, versions, schedules). After expiry the memory stops being injected until renewed — set a new value to renew, 0 to clear. Omit for permanent memories',
       },
+      keywords: {
+        type: 'string',
+        description: 'Optional 3-5 comma-separated synonyms/aliases for retrieval (e.g. "db,postgres,psycopg2"); helps recall when wording differs. Omit if unsure',
+      },
     },
     output: {
       schema: {
@@ -102,9 +107,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           scope: { type: 'string', required: true, enum: ['project', 'user'] },
           pinned: { type: 'boolean', required: true },
           redacted: { type: 'integer' },
+          indexNearCap: { type: 'boolean' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})${(value.redacted ?? 0) > 0 ? ` — ⚠ ${String(value.redacted)} secret(s) detected and redacted; do not store credentials in memories` : ''}` }],
+      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})${(value.redacted ?? 0) > 0 ? ` — ⚠ ${String(value.redacted)} secret(s) detected and redacted; do not store credentials in memories` : ''}${value.indexNearCap === true ? ' — note: the memory index is near its budget; consider merging related memories instead of adding new ones' : ''}` }],
     },
     async execute(args, exec) {
       const cwd = requireCwd(exec.agent?.session.header.cwd)
@@ -133,12 +139,31 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         ...(args.pinned !== undefined ? { pinned: args.pinned } : {}),
         ...(args.disabled !== undefined ? { disabled: args.disabled } : {}),
         ...(validUntil !== undefined ? { validUntil } : {}),
+        // keywords(1.7.0):逗号分隔(含顿号) → 清洗;清洗后为空 = 不写键(继承)
+        // ——审查 major 修复:空数组是清除哨兵,清洗副作用不得意外触发
+        ...(args.keywords !== undefined && args.keywords.trim().length > 0
+          ? (() => { const kw = args.keywords.split(/[,，、]/)
+            .map(k => k.trim()).filter(k => k.length > 0 && k.length <= 24).slice(0, 5)
+            return kw.length > 0 ? { keywords: kw } : {} })()
+          : {}),
         description: args.description.trim().slice(0, 160),
         type: args.type,
         body: args.body.slice(0, 2000),
       }, scope, cwd)
       const operation: 'created' | 'updated' = existing === null || existing.scope !== scope ? 'created' : 'updated'
-      return { name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true, ...(secretHits > 0 ? { redacted: secretHits } : {}) }
+      // 索引硬顶告警(1.7.0,engramory 思路的温和版):写入后索引逼近预算时
+      // 回执提示合并——不拒绝写(截断兜底在注入层),只让模型知道拥挤了。
+      // 口径=注入整段(两层索引和,与 renderMemoryIndexDetail 拼接一致;审查 major
+      // 修复:单层口径在双层中等占用时截断已发生而告警永不触发)
+      const budgetNow = indexByteBudget(config.maxBytes)
+      const idxBytes = (config.enableUserScope ? Buffer.byteLength(store.readIndexSync('user') ?? '', 'utf8') : 0)
+        + Buffer.byteLength(store.readIndexSync(scope, cwd) ?? '', 'utf8')
+      const nearCap = budgetNow > 0 && idxBytes > budgetNow * 0.9
+      return {
+        name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true,
+        ...(secretHits > 0 ? { redacted: secretHits } : {}),
+        ...(nearCap ? { indexNearCap: true } : {}),
+      }
     },
     presentCall: args => ({ card: 'generic', title: `Memory write: ${String(args.name)}`, kind: 'other', rawInput: args }),
   }))
@@ -163,6 +188,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           scope: { type: 'string', required: true },
           supersededBy: { type: 'string', description: 'Present when this memory is superseded: the name of its successor' },
           expired: { type: 'boolean', description: 'Present when this memory passed its shelf life (validUntil)' },
+          ageDays: { type: 'integer', description: 'How many days ago this memory was last updated (freshness signal)' },
           linked: {
             type: 'array',
             description: 'One-line summaries of memories referenced via [[name]] in the body',
@@ -183,6 +209,15 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           : ''
         // 过期标记(1.6.0 审查修复):主动召回过期条目时明示这是历史事实——
         // 否则模型把过期时效信息当现行事实复述
+        // 新鲜度(1.7.0):召回时明示信息年龄,旧信息是线索不是事实
+        // 与 EXPIRED 互斥(审查 nit):过期段已是最强提示,不再叠新鲜度
+        const days = value.ageDays
+        const showFresh = days !== undefined && value.expired !== true && days >= 30
+        const freshness = !showFresh
+          ? ''
+          : days !== undefined && days >= 180
+            ? '\n\n⏳ This memory was last updated ' + String(days) + ' days ago — treat as a lead, not a fact.\n'
+            : '\n\n⏳ (saved ' + String(days) + ' days ago)\n'
         const expired = value.expired === true
           ? '\n\n⏱ EXPIRED — this memory passed its shelf life and is no longer injected. Treat it as historical; re-confirm with the user before relying on it.\n'
           : ''
@@ -190,7 +225,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         const linked = linkedList.length === 0
           ? ''
           : `\n\nLinked memories:\n${linkedList.map(l => `- ${l.name} — ${l.description}`).join('\n')}`
-        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${superseded}${expired}${linked}` }]
+        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${freshness}${superseded}${expired}${linked}` }]
       },
     },
     async execute(args, exec) {
@@ -206,8 +241,15 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
       // 召回展开:一层 [[name]] 链接摘要(纯函数见 src/links.ts)
       const { linked } = await expandLinks(record.body, record.name, name =>
         store.findIn(name, availableScopes(), cwd))
+      // 新鲜度(1.7.0,sage-mem 思路):召回时明示"这段信息多旧"——模型自行
+      // 打折旧信息,引用动作不该让陈旧记忆显得更权威
+      const ageAnchor = record.updatedMs ?? record.createdMs
+      const ageDays = ageAnchor !== undefined
+        ? Math.max(0, Math.floor((Date.now() - ageAnchor) / 86_400_000))
+        : undefined
       return {
         name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked,
+        ...(ageDays !== undefined ? { ageDays } : {}),
         ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
         ...(isExpired(record, Date.now()) ? { expired: true } : {}),
       }
@@ -329,7 +371,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
       // CJK bigram,中文查询自动生效;body 参与匹配是 search 相对 list 的核心价值
       const matches = all
         .map(record => {
-          const haystack = `${record.name}\n${record.title ?? ''}\n${record.description}\n${record.body}`
+          const haystack = `${record.name}\n${record.title ?? ''}\n${record.description}\n${record.body}${record.keywords !== undefined ? `\n${record.keywords.join(' ')}` : ''}`
           const score = descriptionCoverage(query, haystack)
           const hitIndex = record.body.toLowerCase().indexOf(query.toLowerCase().split(/\s+/)[0] ?? '')
           const excerpt = hitIndex >= 0

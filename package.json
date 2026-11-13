@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-memory",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Auditable memory for DeepSeek Harness: 4-state trust machine + verbatim evidence chains + recall funnel + 4-layer evals. Plain Markdown, zero servers, zero embeddings.",
   "type": "module",
   "license": "MIT",

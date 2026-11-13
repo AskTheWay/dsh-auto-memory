@@ -15,7 +15,7 @@
  *    的 name),symlink 条目跳过(防止目录外内容被吸进索引注入系统提示词)。
  */
 
-import { promises as fsp, lstatSync, readFileSync } from 'node:fs'
+import { promises as fsp, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
@@ -179,7 +179,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
   try {
     const fm = parseFrontmatter(raw)
     if (!fm) return null
-    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence, supersededBy, supersedes, validUntil } = fm.data
+    const { name, description, type, title, created, updated, lastRead, reads, pinned, importance, disabled, origin, status, evidence, supersededBy, supersedes, validUntil, keywords } = fm.data
     if (typeof name !== 'string' || typeof description !== 'string' || description.trim().length === 0) return null
     const parsedType = type === undefined ? 'reference' : asMemoryType(String(type))
     const asMs = (value: unknown): number | undefined =>
@@ -204,6 +204,10 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
     // 它抛异常且保留字 memory 会炸 parse,这里静默丢字段)
     const asLineage = (value: unknown): string | undefined =>
       typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && value.length <= 64 ? value : undefined
+    // 检索关键词(1.7.0):字符串数组,逐个清洗(非空/去空白/≤24 字符,取前 5 个)
+    const parsedKeywords = Array.isArray(keywords)
+      ? keywords.filter((k): k is string => typeof k === 'string' && k.trim().length > 0 && k.trim().length <= 24).slice(0, 5).map(k => k.trim())
+      : undefined
     return {
       name: normalizeName(name),
       title: typeof title === 'string' && title.trim().length > 0 ? title.trim() : undefined,
@@ -219,6 +223,7 @@ export function parseMemory(raw: string, scope: MemoryScope): MemoryRecord | nul
       ...(asLineage(supersededBy) !== undefined ? { supersededBy: asLineage(supersededBy)! } : {}),
       ...(asLineage(supersedes) !== undefined ? { supersedes: asLineage(supersedes)! } : {}),
       ...(asMs(validUntil) !== undefined ? { validUntil: asMs(validUntil)! } : {}),
+      ...(parsedKeywords !== undefined && parsedKeywords.length > 0 ? { keywords: parsedKeywords } : {}),
       ...(parsedOrigin !== undefined ? { origin: parsedOrigin } : {}),
       createdMs: asMs(created),
       updatedMs: asMs(updated),
@@ -248,6 +253,8 @@ export function serializeMemory(record: Omit<MemoryRecord, 'scope'>): string {
     ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
     // 有效期(1.6.0):条件落盘,缺省 = 永久
     ...(record.validUntil !== undefined && record.validUntil > 0 ? { validUntil: record.validUntil } : {}),
+    // 检索关键词(1.7.0):条件落盘
+    ...(record.keywords !== undefined && record.keywords.length > 0 ? { keywords: record.keywords.slice(0, 5) } : {}),
     // 导入溯源(嵌套块):字段名短、YAML 正确转义;缺省即普通记忆
     ...(record.origin !== undefined ? {
       origin: {
@@ -343,6 +350,22 @@ export function isStale(record: MemoryRecord, staleAfterDays: number, nowMs: num
  */
 export function isExpired(record: MemoryRecord, nowMs: number): boolean {
   return record.validUntil !== undefined && record.validUntil > 0 && record.validUntil <= nowMs
+}
+
+/**
+ * 判断一条记忆是否处于"长期未确认"衰老档(1.7.0,借 dsh-memory-hub 的 aging
+ * 四态思路收敛为单档):固化产物(candidate)出生超过 90 天仍未验证——
+ * 温和降权而非隐藏(×0.85),面板标记引导验证。verified(人授)豁免;
+ * disputed/superseded 已有归宿不参与;无时间锚的旧文件不参与。
+ * 锚=createdMs(审查 minor 修复):编辑/echo 重写会刷 updatedMs,用它会
+ * 让模型借复述刷新自我洗白;出生时钟只有真正的验证(或删除)能停。
+ */
+export const AGING_DAYS = 90
+export const AGING_DECAY = 0.85
+export function isAging(record: MemoryRecord, nowMs: number): boolean {
+  if (record.status !== 'candidate') return false // 只针对未验证的固化产物
+  if (record.createdMs === undefined) return false
+  return nowMs - record.createdMs > AGING_DAYS * 86_400_000
 }
 
 // ---------- P0.5 安全包:写入脱敏与协议标签防护 ----------
@@ -451,19 +474,20 @@ export const DEFAULT_IMPORTANCE: Readonly<Record<MemoryType, number>> = {
 }
 
 /**
- * 三因子评分(纯函数):importance × recency(0.995^天,天粒度取整保证当日稳定,
+ * 评分(纯函数):importance × recency(0.995^天,天粒度取整保证当日稳定,
  * 不破坏 KV 前缀缓存)× readsBoost(1.6.0 引用闭环:高频召回温和晋升,上限
- * ×4——"被模型反复主动取阅"是价值信号,但热门不该挤死新记忆)。
+ * ×4)× agingDecay(1.7.0:90 天未验证的 candidate ×0.85 温和降权)。
  * relevance 需查询上下文,仅用于读取场景,不进注入排序。
- * KV 注:reads 变化必然伴随文件写入(touch),重排合法——无写入时分数逐字节稳定。
+ * KV 注:reads/updatedMs 变化必然伴随文件写入,重排合法——无写入时分数逐字节稳定。
  */
 export function memoryScore(record: MemoryRecord, nowMs: number): number {
   const importance = record.importance ?? DEFAULT_IMPORTANCE[record.type]
   const readsBoost = 1 + 0.15 * Math.min(record.reads ?? 0, 20)
+  const agingBoost = isAging(record, nowMs) ? AGING_DECAY : 1
   const anchor = record.lastReadMs ?? record.updatedMs ?? record.createdMs
-  if (anchor === undefined) return importance * readsBoost // 无时间锚的旧文件:重要度×引用
+  if (anchor === undefined) return importance * readsBoost * agingBoost
   const days = Math.max(0, Math.floor((nowMs - anchor) / 86_400_000))
-  return importance * Math.pow(0.995, days) * readsBoost
+  return importance * Math.pow(0.995, days) * readsBoost * agingBoost
 }
 
 /**
@@ -624,6 +648,10 @@ export class MemoryStore {
       const validUntil = record.validUntil !== undefined
         ? (record.validUntil > 0 ? record.validUntil : undefined)
         : existing?.validUntil
+      // keywords 透传(1.7.0):显式数组优先(空数组 = 清除);未传继承
+      const keywords = record.keywords !== undefined
+        ? (record.keywords.length > 0 ? record.keywords.slice(0, 5) : undefined)
+        : existing?.keywords
       const next: MemoryRecord = {
         ...fields,
         ...(pinned === true ? { pinned: true } : {}),
@@ -646,6 +674,8 @@ export class MemoryStore {
       }
       if (validUntil === undefined) delete next.validUntil // 哨兵 0/显式清除:键不落盘
       else next.validUntil = validUntil
+      if (keywords === undefined) delete next.keywords
+      else next.keywords = keywords
       written = next
       await writeFileAtomic(file, serializeMemory(next), { mode: 0o600, dirMode: 0o700 })
       await this.rebuildIndex(scope, cwd)
@@ -833,5 +863,32 @@ export class MemoryStore {
     } catch {
       return null
     }
+  }
+
+  /**
+   * 同步列出两层全部记忆(1.7.0,keywords 相关性打分用;与 readIndexSync
+   * 同纪律——text 函数是同步路径,不能 await)。跳过索引/symlink/坏文件。
+   */
+  listAllSync(cwd?: string): MemoryRecord[] {
+    const out: MemoryRecord[] = []
+    const scan = (dir: string, scope: MemoryScope): void => {
+      let dirents
+      try {
+        dirents = readdirSync(dir, { withFileTypes: true })
+      } catch { return }
+      for (const dirent of dirents) {
+        if (!dirent.isFile() || !dirent.name.endsWith('.md')) continue
+        if (dirent.name.toLowerCase() === INDEX_FILENAME.toLowerCase()) continue
+        const file = join(dir, dirent.name)
+        if (isSymlink(file)) continue
+        try {
+          const record = parseMemory(readFileSync(file, 'utf8'), scope)
+          if (record !== null) out.push(record)
+        } catch { /* 坏文件跳过 */ }
+      }
+    }
+    scan(this.dir('user'), 'user')
+    if (cwd !== undefined) scan(this.dir('project', cwd), 'project')
+    return out
   }
 }

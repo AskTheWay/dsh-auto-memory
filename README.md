@@ -27,6 +27,12 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ## Highlights
 
+**1.7 — memory maintenance**: retrieval keywords (vector-free semantic
+generalization), an aging tier for long-unverified candidates, citation
+discipline + freshness banners (citing a memory doesn't make it truer),
+dead-link health checks, near-cap write receipts, and a graded capability
+contract (`docs/CONTRACT.md`).
+
 **1.6 — memory has a shelf life**: time-sensitive facts (plans, prices,
 versions) carry a `validUntil`; expired memories stop being injected, surface
 on the health board with one-click renew, and are marked as historical when

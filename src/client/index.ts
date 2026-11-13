@@ -77,7 +77,8 @@ export interface MemoryFace {
     unverified: Array<{ name: string; scope: string; slug: string; hasEvidence: boolean }>
     zombies: Array<{ name: string; scope: string; slug: string; ageDays: number }>
     conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
-    expired: Array<{ name: string; scope: string; slug: string; expiredDays: number }>
+    expired: Array<{ name: string; scope: string; slug: string; expiredDays: number }>;
+    deadLinks: Array<{ from: string; scope: string; slug: string; target: string }>
   }>
   /** 1.2.0 反向导出桥:信任态记忆 → AGENTS.md 片段(纯文本)。 */
   exportAgents: () => Promise<{ content: string; count: number }>
@@ -507,6 +508,7 @@ export const PANEL_CSS = `
 .dam-import-file{font-size:10.5px;color:var(--dsw-alias-label-tertiary);}
 .dam-import-desc{font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere;}
 .dam-badge{flex:none;align-self:center;font-size:10.5px;line-height:16px;padding:0 7px 0 6px;border-radius:999px;white-space:nowrap;border:1px solid transparent;}
+.dam-health-row .dam-badge{max-width:200px;overflow:hidden;text-overflow:ellipsis;}
 .dam-badge--cand::before,.dam-badge--ok::before,.dam-badge--warn::before,.dam-badge--danger::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;margin-right:4px;vertical-align:1px;}
 .dam-badge--ok{color:var(--dsw-alias-state-success-primary,#16a34a);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16a34a) 12%,transparent);}
 .dam-badge--warn{color:var(--dsw-alias-state-warn-primary,#d97706);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#d97706) 12%,transparent);}

@@ -77,6 +77,8 @@ export interface RawCandidate {
   evidence?: unknown
   /** 有效期天数(1.6.0;时效性事实的保质期;非法/缺省 = 永久)。 */
   validUntilDays?: unknown
+  /** 检索关键词(1.7.0;3-5 个同义词,数组或逗号分隔串)。 */
+  keywords?: unknown
 }
 
 /** sanitize 后的可写候选。 */
@@ -95,6 +97,8 @@ export interface SanitizedCandidate {
   evidence?: MemoryEvidence
   /** 有效期天数(1.6.0;1-3650;缺省 = 永久)。 */
   validUntilDays?: number
+  /** 检索关键词(1.7.0;清洗后 3-5 个,≤24 字符)。 */
+  keywords?: string[]
 }
 
 // ---------- 纯函数(可测) ----------
@@ -209,6 +213,11 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean, o
       ? Math.min(10, Math.max(1, raw.importance)) : undefined
     // 有效期(1.6.0):时效性事实(计划/价格/版本/日程)由固化模型给保质期天数;
     // 越界值(含 0/负数)静默丢弃(永久)——与 importance 同款 fail-safe
+    // keywords(1.7.0,借 A-MEM 思路):数组或逗号分隔串 → 清洗(非空/≤24 字符/前 5 个)
+    const keywordsRaw = Array.isArray(raw.keywords)
+      ? raw.keywords.map(k => String(k))
+      : typeof raw.keywords === 'string' ? raw.keywords.split(/[,，]/) : []
+    const keywords = keywordsRaw.map(k => k.trim()).filter(k => k.length > 0 && k.length <= 24).slice(0, 5)
     const validUntilDays = typeof raw.validUntilDays === 'number' && Number.isSafeInteger(raw.validUntilDays)
       && raw.validUntilDays >= 1 && raw.validUntilDays <= 3650
       ? raw.validUntilDays : undefined
@@ -236,6 +245,7 @@ export function sanitizeCandidate(raw: RawCandidate, enableUserScope: boolean, o
       ...(evidence !== undefined ? { evidence } : {}),
       ...(importance !== undefined ? { importance } : {}),
       ...(validUntilDays !== undefined ? { validUntilDays } : {}),
+      ...(keywords.length > 0 ? { keywords } : {}),
     }
   } catch {
     return null
@@ -283,9 +293,12 @@ ${instructions}- Persist: who the user is (role, expertise, durable preferences)
   (plans with dates, prices, versions, schedules, "currently X"): after that
   many days the memory stops being injected until renewed. Omit it for
   durable facts — most memories should NOT have it.
+- "keywords" is an optional array of 3-5 short synonyms/aliases that help
+  retrieval when the user words things differently (e.g. for a database
+  preference: ["db","postgres","psycopg2"]). Omit when unsure.
 
 Return ONLY a JSON array, each element exactly:
-{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5,"validUntilDays":90,"evidence":"1-2 sentence VERBATIM quote from the transcript that supports this fact"}
+{"name":"kebab-case-id","title":"short human heading","description":"one line <=160 chars","type":"user|feedback|project|reference","body":"the fact in markdown; for feedback include **Why:** and **How to apply:** lines","scope":"project","importance":5,"validUntilDays":90,"keywords":["alias1","alias2"],"evidence":"1-2 sentence VERBATIM quote from the transcript that supports this fact"}
 "evidence" must be copied word-for-word from the transcript above — do not
 paraphrase. If you cannot quote a supporting line, do not output that item.
 Use scope "user" only for user-global preferences; default "project".

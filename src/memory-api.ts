@@ -17,7 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
-import { MemoryStore, INDEX_FILENAME, isStale, isExpired, memoryScore, parseMemory, projectKey } from './store.ts'
+import { MemoryStore, INDEX_FILENAME, isStale, isExpired, isAging, memoryScore, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
 import { descriptionSimilarity } from './matching.ts'
 import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
@@ -43,6 +43,8 @@ export interface PanelMemory {
   stale: boolean
   /** 已过有效期(1.6.0):不注入、文件保留,面板引导续期/清除。 */
   expired: boolean
+  /** 长期未确认(1.7.0):candidate 超 90 天未验证——注入温和降权,引导验证。 */
+  aging: boolean
   /** 有效期(epoch ms;缺省 = 永久)。 */
   validUntilMs?: number
   /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
@@ -131,6 +133,7 @@ async function readGroup(
       disabled: record.disabled === true,
       stale: isStale(record, staleAfterDays(), now),
       expired: isExpired(record, now),
+      aging: isAging(record, now),
       ...(record.validUntil !== undefined ? { validUntilMs: record.validUntil } : {}),
       ...(record.status !== undefined ? { status: record.status } : {}),
       ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
@@ -186,11 +189,15 @@ export interface HealthReport {
   conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate', a: { name: string, scope: MemoryScope }, b: { name: string, scope: MemoryScope } }>
   /** 已过期(1.6.0):过了 validUntil 停止注入——续期(再给 N 天)或清除。 */
   expired: Array<{ name: string, scope: MemoryScope, slug: string, expiredDays: number }>
+  /** 死链(1.7.0,Letta /doctor 思路):body 里 [[name]] 指向不存在的记忆。 */
+  deadLinks: Array<{ from: string, scope: MemoryScope, slug: string, target: string }>
 }
 
 /** 聚合体检三榜(纯函数便于测试;conflicts 的两两比对按 scope 分组、每组限 200 条)。 */
 export function buildHealthReport(entries: Array<{ record: MemoryRecord, scope: MemoryScope, slug: string }>, now = Date.now()): HealthReport {
-  const report: HealthReport = { unverified: [], zombies: [], conflicts: [], expired: [] }
+  const report: HealthReport = { unverified: [], zombies: [], conflicts: [], expired: [], deadLinks: [] }
+  // 全库名单(死链判定基准:跨层同名任一层存在即视为活链)
+  const allNames = new Set(entries.map(e => e.record.name))
   for (const { record, scope, slug } of entries) {
     if (record.status === 'candidate') {
       report.unverified.push({ name: record.name, scope, slug, hasEvidence: record.evidence !== undefined })
@@ -202,6 +209,14 @@ export function buildHealthReport(entries: Array<{ record: MemoryRecord, scope: 
     // 已过期(1.6.0):disputed/superseded 已有归宿,不重复报告
     if (isExpired(record, now) && record.status !== 'disputed' && record.status !== 'superseded') {
       report.expired.push({ name: record.name, scope, slug, expiredDays: Math.floor((now - (record.validUntil ?? now)) / 86_400_000) })
+    }
+    // 死链(1.7.0):body 的 [[kebab-name]] 指向不存在(自链不算;每条最多报 3 个防刷屏)
+    if (record.status !== 'superseded') {
+      const linked = [...record.body.matchAll(/\[\[([a-z0-9]+(?:-[a-z0-9]+)*)\]\]/g)]
+        .map(m => m[1]!).filter(name => name !== record.name)
+      for (const target of [...new Set(linked)].slice(0, 3)) {
+        if (!allNames.has(target)) report.deadLinks.push({ from: record.name, scope, slug, target })
+      }
     }
   }
   // 跨层同名:user 层与项目层同名(findIn 的优先级语义让两者命运取决于查询

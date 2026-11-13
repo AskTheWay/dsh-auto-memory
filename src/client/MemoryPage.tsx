@@ -25,6 +25,8 @@ interface PanelMemory {
   stale: boolean
   /** 已过有效期(1.6.0):不注入、文件保留,可续期。 */
   expired: boolean
+  /** 长期未确认(1.7.0):candidate 超 90 天未验证,注入温和降权。 */
+  aging: boolean
   /** 有效期(epoch ms;缺省 = 永久)。 */
   validUntilMs?: number
   /** 可信状态(缺省 = 信任态;disputed/superseded 不注入)。 */
@@ -86,6 +88,7 @@ interface HealthReportFace {
   zombies: Array<{ name: string; scope: string; slug: string; ageDays: number }>
   conflicts: Array<{ kind: 'cross-scope' | 'near-duplicate'; a: { name: string; scope: string }; b: { name: string; scope: string } }>
   expired: Array<{ name: string; scope: string; slug: string; expiredDays: number }>
+  deadLinks: Array<{ from: string; scope: string; slug: string; target: string }>
 }
 
 /** 设置中心响应形状(config.get,1.4.0)。 */
@@ -271,6 +274,7 @@ function HealthSection({ health, t, onLocate, onRenew, busy }: { health: HealthR
           {health.unverified.length > 0 && <span className="dam-health-pill" data-kind="unverified">? {health.unverified.length}</span>}
           {health.zombies.length > 0 && <span className="dam-health-pill" data-kind="zombies"><Icon name="clock" size={10} /> {health.zombies.length}</span>}
           {health.expired.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⏱ {health.expired.length}</span>}
+          {health.deadLinks.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⛓ {health.deadLinks.length}</span>}
           {health.conflicts.length > 0 && <span className="dam-health-pill" data-kind="conflicts">⚠ {health.conflicts.length}</span>}
         </span>
       </header>
@@ -338,6 +342,23 @@ function HealthSection({ health, t, onLocate, onRenew, busy }: { health: HealthR
               </button>
               <button type="button" className="dam-btn" disabled={busy} title={t('renewAction')} onClick={() => { void onRenew({ name: m.name, scope: m.scope, slug: m.slug }) }}>{t('renewAction')}</button>
             </span>
+          ))}
+        </div>
+        <div className="dam-block">
+          <p className="dam-section">{t('healthDeadLinks')}</p>
+          {health.deadLinks.length === 0 && <p className="dam-note">{t('healthNone')}</p>}
+          {health.deadLinks.map(d => (
+            <button
+              type="button"
+              key={'l-' + d.scope + '-' + d.slug + '-' + d.from + '-' + d.target}
+              className="dam-health-row"
+              title={t('healthLocateTip')}
+              onClick={() => { onLocate(d.from) }}
+            >
+              <span className="dam-badge dam-badge--danger">[[{d.target}]]</span>
+              <code title={d.from}>{d.from}</code>
+              <span className="dam-health-meta">{d.scope === 'user' ? t('scopeUser') : t('scopeProject')}</span>
+            </button>
           ))}
         </div>
       </div>
@@ -1089,6 +1110,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
                         {memory.disabled && <span className="dam-badge dam-badge--muted">{t('mutedShort')}</span>}
                         {memory.stale && !memory.disabled && <span className="dam-badge dam-badge--warn">{t('staleShort')}</span>}
                         {memory.expired && <span className="dam-badge dam-badge--warn" title={t('validUntilHint')}>⏱ {t('expiredBadge')}</span>}
+                        {memory.aging && !memory.expired && <span className="dam-badge dam-badge--cand" title={t('agingBadge')}>{t('agingBadge')}</span>}
                         {memory.status === 'candidate' && <span className="dam-badge dam-badge--cand" title={t('statusTipCandidate')}>? {t('statusCandidate')}</span>}
                         {memory.status === 'verified' && <span className="dam-badge dam-badge--ok" title={t('statusVerified')}>✓ {t('statusVerified')}</span>}
                         {memory.status === 'disputed' && <span className="dam-badge dam-badge--danger" title={t('statusTipDisputed')}>⊘ {t('statusDisputed')}</span>}
@@ -1225,7 +1247,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
   const showInsights = stats !== null && stats.injections > 0
   const healthIssueCount = health === null
     ? 0
-    : health.unverified.length + health.zombies.length + health.conflicts.length + health.expired.length
+    : health.unverified.length + health.zombies.length + health.conflicts.length + health.expired.length + health.deadLinks.length
   const showHealth = health !== null && healthIssueCount > 0
   const showSettings = settings !== null
   const showTabBar = showInsights || showHealth || showSettings

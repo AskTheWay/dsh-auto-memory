@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.7.0] - 2026-11-12
+
+### Added
+
+- **Retrieval keywords** (A-MEM-inspired, vector-free semantic generalization):
+  consolidation and `memory_write` can attach 3-5 synonyms/aliases per memory;
+  they feed both `memory_search` scoring and relevance-ranked truncation —
+  recall survives wording differences without embeddings.
+- **Aging tier** (dsh-memory-hub-inspired): candidates left unverified for 90+
+  days get a gentle ×0.85 ranking decay and an "unconfirmed" badge — a middle
+  ground between fresh and expired, feeding the health board loop.
+- **Citation discipline** (sage-mem-inspired): the injected policy now tells
+  the model that citing a memory does not make it truer — verify paths and
+  functions against the current workspace; observations beat stale memories.
+- **Freshness banners on recall** (`memory_read`): "saved N days ago" (30+)
+  and "treat as a lead, not a fact" (180+) — the model self-discounts old
+  information instead of lending it authority by citing it.
+- **Dead-link health check** (Letta /doctor-inspired): `[[name]]` references
+  to nonexistent memories surface on a fifth health board.
+- **Index near-cap receipt**: when a write pushes the index past 90% of
+  budget, the `memory_write` result suggests merging related memories —
+  advisory, never blocking.
+- **Capability contract** (`docs/CONTRACT.md`, sage-mem contract-inspired):
+  every public guarantee is graded into four frozen tiers — guaranteed
+  (assertion-backed), best-effort, known-limitation, out-of-scope — and
+  changing a tier is a breaking change.
+
 ## [1.6.0] - 2026-11-08
 
 ### Added
