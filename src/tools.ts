@@ -21,6 +21,14 @@ import { descriptionCoverage } from './matching.ts'
 import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
 
+/**
+ * 索引占用分档(1.8.0,纯函数):75%/90% 两级(受 Claude Code 官方 auto-memory
+ * 近限提示启发;官方为行数/字节硬顶的提醒+报错,我们折成净预算占用比)。
+ */
+export function indexLevelFor(usageRatio: number): 'getting-full' | 'near-cap' | undefined {
+  return usageRatio >= 0.9 ? 'near-cap' : usageRatio >= 0.75 ? 'getting-full' : undefined
+}
+
 /** 解析可选 scope 参数;未指定时返回 undefined(由调用方按查重/配置语义决定)。 */
 function parseExplicitScope(raw: string | undefined): MemoryScope | undefined {
   if (raw === undefined) return undefined
@@ -107,10 +115,10 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           scope: { type: 'string', required: true, enum: ['project', 'user'] },
           pinned: { type: 'boolean', required: true },
           redacted: { type: 'integer' },
-          indexNearCap: { type: 'boolean' },
+          indexLevel: { type: 'string', enum: ['getting-full', 'near-cap'] },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})${(value.redacted ?? 0) > 0 ? ` — ⚠ ${String(value.redacted)} secret(s) detected and redacted; do not store credentials in memories` : ''}${value.indexNearCap === true ? ' — note: the memory index is near its budget; consider merging related memories instead of adding new ones' : ''}` }],
+      render: (_args, value) => [{ type: 'text', text: `Memory ${value.operation}: ${value.name} (${value.scope}${value.pinned ? ', pinned' : ''})${(value.redacted ?? 0) > 0 ? ` — ⚠ ${String(value.redacted)} secret(s) detected and redacted; do not store credentials in memories` : ''}${value.indexLevel === 'getting-full' ? ' — note: the memory index is filling up' : ''}${value.indexLevel === 'near-cap' ? ' — note: the memory index is near its budget; consider merging related memories instead of adding new ones' : ''}` }],
     },
     async execute(args, exec) {
       const cwd = requireCwd(exec.agent?.session.header.cwd)
@@ -151,18 +159,20 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         body: args.body.slice(0, 2000),
       }, scope, cwd)
       const operation: 'created' | 'updated' = existing === null || existing.scope !== scope ? 'created' : 'updated'
-      // 索引硬顶告警(1.7.0,engramory 思路的温和版):写入后索引逼近预算时
-      // 回执提示合并——不拒绝写(截断兜底在注入层),只让模型知道拥挤了。
-      // 口径=注入整段(两层索引和,与 renderMemoryIndexDetail 拼接一致;审查 major
-      // 修复:单层口径在双层中等占用时截断已发生而告警永不触发)
+      // 索引硬顶回执(1.7.0 引入,1.8.0 升两级——受 Claude Code 官方 auto-memory
+      // 近限提示启发):75% 温和预告,90% 强提示建议合并。口径=注入整段(两层
+      // 索引和;scope=user 时不再叠 user 层防双计,审查 major 修复)。劝告不阻断。
       const budgetNow = indexByteBudget(config.maxBytes)
-      const idxBytes = (config.enableUserScope ? Buffer.byteLength(store.readIndexSync('user') ?? '', 'utf8') : 0)
+      const idxBytes = (config.enableUserScope && scope !== 'user'
+        ? Buffer.byteLength(store.readIndexSync('user') ?? '', 'utf8')
+        : 0)
         + Buffer.byteLength(store.readIndexSync(scope, cwd) ?? '', 'utf8')
-      const nearCap = budgetNow > 0 && idxBytes > budgetNow * 0.9
+      const usageRatio = budgetNow > 0 ? idxBytes / budgetNow : 0
+      const indexLevel = indexLevelFor(usageRatio)
       return {
         name, operation, scope, pinned: (args.pinned ?? existing?.pinned) === true,
         ...(secretHits > 0 ? { redacted: secretHits } : {}),
-        ...(nearCap ? { indexNearCap: true } : {}),
+        ...(indexLevel !== undefined ? { indexLevel } : {}),
       }
     },
     presentCall: args => ({ card: 'generic', title: `Memory write: ${String(args.name)}`, kind: 'other', rawInput: args }),

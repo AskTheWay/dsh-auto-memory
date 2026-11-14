@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.8.0] - 2026-11-15
+
+### Added
+
+- **External-context pollution marking** (Codex `disable_on_external_context`
+  signal-source port, soft form): sessions that ran web/search/MCP-class tools
+  are flagged from the host's `tool/call` event metadata (pure name matching,
+  no content heuristics). Flagged sessions get a consolidation-prompt guard
+  ("only persist facts the USER themselves stated") and candidates are
+  importance-capped at 6 — identity-grade authority must come from the user's
+  own words, not from web pages. Soft by design: "search the web, then
+  remember my conclusion" stays a legal flow.
+- **Two-tier index receipts** (inspired by Claude Code auto-memory's near-limit advisories):
+  writes now report `getting-full` at 75% budget and `near-cap` at 90% —
+  advisory, never blocking.
+- **dsh 0.2.2-rc.3 host alignment**: dev dependency tree pinned to one
+  version line (resolves the legacy `dsh-agent@0.1.5-rc.3` exact-peer
+  conflict), event-handler signatures adapted to the tightened
+  `undefined | Promise<undefined>` contract, integration tests provide a
+  minimal tool executor for the new assemble path. Peer range unchanged
+  (>=0.1.5-rc.2 <0.3.0) — no release required for compat, this ships the
+  verified matrix.
+
 ## [1.7.0] - 2026-11-12
 
 ### Added

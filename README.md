@@ -27,6 +27,12 @@ open a brand-new session tomorrow, ask *"what do you know about me?"*, and it
 
 ## Highlights
 
+**1.8 — memory hygiene**: sessions that ran web/search/MCP tools are flagged
+(host tool-event metadata, no content sniffing) — their consolidation gets a
+"only persist what the user themselves stated" guard and an importance cap;
+index receipts report two tiers (75% filling up / 90% near cap); verified on
+dsh 0.2.2-rc.3.
+
 **1.7 — memory maintenance**: retrieval keywords (vector-free semantic
 generalization), an aging tier for long-unverified candidates, citation
 discipline + freshness banners (citing a memory doesn't make it truer),
@@ -230,10 +236,10 @@ exclude the policy text, overshooting by ~800 bytes (fixed, regression-tested).
 
 | | CLI | Desktop | Web profile |
 |---|---|---|---|
-| dsh version | 0.1.5-rc.2 | 0.2.0-rc.2 | 0.2.1-rc.2 |
-| status | ✓ tools/prompt/consolidation | ✓ panel + import + audit | ✓ panel + import |
+| dsh version | 0.1.5-rc.2 | 0.2.0-rc.2 | 0.2.2-rc.3 |
+| status | ✓ tools/prompt/consolidation | ✓ panel + import + audit | ✓ panel + settings + health (5 boards) |
 
-**188 tests + four evaluation layers (L0 deterministic / L1 recall / L3 consolidation / L2 end-to-end + LongMemEval alignment). 0 runtime deps beyond `yaml`, ~35 kB installed.**
+**239 tests + a three-axis evaluation system (regression net / component quality / system effect with budget-decoupled dual-budget runs / explicit budget-stress axis). Runtime deps: `yaml` + `schemastery` (schema DSL), ~364 kB unpacked.**
 
 ## Install
 

@@ -199,3 +199,20 @@ describe('KV-safe(同日两次渲染字节相同)', () => {
     expect(a.text).toContain('alpha')
   })
 })
+
+describe('固化 update 分支的真实 spread 形态(1.8.0 审查 major 回归)', () => {
+  it('经 sanitizeCandidate 的 echo 候选不冲掉 verified——status/evidence 显式剥离后交 store 单点判定', async () => {
+    const { sanitizeCandidate, withValidUntil } = await import('../src/consolidate.ts')
+    await store.write({ name: 'prefers-chinese', description: '交流用中文', type: 'feedback', body: 'b', status: 'verified' }, 'user')
+    // 固化模型按指示复用旧名 echo 复述(sanitize 恒带 status:candidate——审查实证它曾被 spread 透传)
+    const candidate = sanitizeCandidate({ name: 'prefers-chinese', description: '交流用中文', type: 'feedback', body: 'b', importance: 8 }, true)!
+    // update 分支修复后的形态:剥 status/evidence 交给 store 单点判定
+    const { status: _s, evidence: _e, ...fields } = withValidUntil(candidate)
+    await store.write({ ...fields, name: 'prefers-chinese', description: candidate.description, type: candidate.type, body: candidate.body }, 'user')
+    expect((await store.read('prefers-chinese', 'user'))?.status).toBe('verified') // echo 不冲验证
+    // 对照:旧形态(spread 透传 status)会冲掉——钉死为什么必须剥离
+    const candidate2 = sanitizeCandidate({ name: 'prefers-chinese', description: '交流用中文', type: 'feedback', body: 'b2 改了', importance: 8 }, true)!
+    await store.write({ ...withValidUntil(candidate2), name: 'prefers-chinese' } as never, 'user')
+    expect((await store.read('prefers-chinese', 'user'))?.status).toBe('candidate') // 显式 candidate+内容变化:降级是正确语义
+  })
+})
