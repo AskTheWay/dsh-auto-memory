@@ -96,15 +96,18 @@ export function apply(ctx: Context, config: Config): void {
   // 无条件执行:1.6.0 起有效期与 staleAfterDays 无关(过期记忆也要在重建时
   // 移出索引);无过期记忆时重建内容幂等,代价可忽略
   const refreshed = new Set<string>()
+  // 0.2.2 事件面:handler 签名从 void 收紧为 undefined | Promise<undefined>
+  // ——fire-and-forget 逻辑显式返回 undefined 适配(fix 1.8.0 宿主对齐)
   ctx.on('agent/created', ({ agent }) => {
     const cwd = agent.session.header.cwd
-    if (cwd === undefined) return
-    if (refreshed.has(agent.session.id)) return
+    if (cwd === undefined) return undefined
+    if (refreshed.has(agent.session.id)) return undefined
     refreshed.add(agent.session.id)
     void store.refreshIndex('project', cwd)
     if (live.enableUserScope) void store.refreshIndex('user')
+    return undefined
   })
-  ctx.on('session/disposed', session => { refreshed.delete(session.id) })
+  ctx.on('session/disposed', session => { refreshed.delete(session.id); return undefined })
 
   // 唯一注入段:动态 text,每个 step 重组装时按当前 agent 的 cwd 重新求值;
   // 两层均无记忆时返回空串(整段消失,对齐 Claude Code"有记忆才注入")。

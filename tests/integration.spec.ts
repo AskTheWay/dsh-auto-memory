@@ -42,6 +42,12 @@ describe('dsh-auto-memory 插件挂载', () => {
   it('系统提示词:唯一 memory 段注册、无记忆时段为空、渲染不抛错', async () => {
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime, {})
+    // 0.2.2 宿主行为:assemble 时 systemPrompt.tools 描述段经 selectExecutor 解析,
+    // 组合内必须先有 executor(真实宿主由 agent 运行时提供;测试给最小实现:
+    // describe 返回空工具描述,无记忆插件场景够用)
+    ctx.tools.setExecutor({
+      describe: () => ({ schemas: [], knownNames: [] }),
+    } as never)
     await ctx.plugin(autoMemory, { maxBytes: 4096, memoryDir: root, enableUserScope: true, autoSummarize: false, autoSummarizeMaxMemories: 5, autoSummarizeMaxTokens: 2048, minImportance: 4, staleAfterDays: 0 })
 
     const assembly = await ctx.systemPrompt.assemble()
