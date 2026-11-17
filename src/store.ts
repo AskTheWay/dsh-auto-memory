@@ -670,6 +670,10 @@ export class MemoryStore {
         // 现有写入路径不传,行为不变——mergeLifecycleMeta 的 now 语义照旧)
         ...(record.createdMs !== undefined ? { createdMs: record.createdMs } : {}),
         ...(record.updatedMs !== undefined ? { updatedMs: record.updatedMs } : {}),
+        // reads/lastReadMs 同款显式优先(1.10.0 审查修复:dream.apply 的 merge
+        // 传 reads 求和,被 mergeLifecycleMeta 的 existing 继承覆盖会静默丢计数)
+        ...(record.reads !== undefined ? { reads: record.reads } : {}),
+        ...(record.lastReadMs !== undefined ? { lastReadMs: record.lastReadMs } : {}),
         scope,
       }
       if (validUntil === undefined) delete next.validUntil // 哨兵 0/显式清除:键不落盘
@@ -889,6 +893,44 @@ export class MemoryStore {
     }
     scan(this.dir('user'), 'user')
     if (cwd !== undefined) scan(this.dir('project', cwd), 'project')
+    return out
+  }
+
+  /**
+   * 全库两层异步扫描(1.10.0 dreaming 用):user 层 + **全部** project 目录
+   * (rootDir 下每个 `--slug--`)。与 list 的差异:不需要 cwd——dreaming 是
+   * 跨项目全局回读,没有"当前工作区"概念;listAll(cwd) 的 project 层必须
+   * 带 cwd,误用会抛错(审查 major:dreaming 首版就误用了它)。
+   * 直接按目录名拼路径(不走 dir():project-scope 无 cwd 是它的设计性拒绝,
+   * 这里是"按已知目录名枚举"的不同语义)。
+   */
+  async listAllScopes(): Promise<MemoryRecord[]> {
+    const out: MemoryRecord[] = []
+    out.push(...await this.list('user'))
+    let entries: string[]
+    try {
+      entries = await fsp.readdir(this.rootDir)
+    } catch {
+      return out
+    }
+    for (const entry of entries.sort()) {
+      if (!entry.startsWith('--') || !entry.endsWith('--') || entry === USER_SCOPE_DIR) continue
+      const dir = join(this.rootDir, entry)
+      let dirents
+      try {
+        dirents = await fsp.readdir(dir, { withFileTypes: true })
+      } catch { continue }
+      for (const dirent of dirents) {
+        if (!dirent.isFile() || !dirent.name.endsWith('.md')) continue
+        if (dirent.name.toLowerCase() === INDEX_FILENAME.toLowerCase()) continue
+        const file = join(dir, dirent.name)
+        if (isSymlink(file)) continue
+        const raw = await fsp.readFile(file, 'utf8').catch(() => null)
+        if (raw === null) continue
+        const record = parseMemory(raw, 'project')
+        if (record !== null) out.push(record)
+      }
+    }
     return out
   }
 }

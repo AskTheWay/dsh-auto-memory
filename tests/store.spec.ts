@@ -536,3 +536,13 @@ describe('导入溯源 origin(0.10.0 撤销导入)', () => {
     expect(await store.read('keep-me', 'user')).toBeNull()
   })
 })
+
+describe('reads/lastReadMs 显式传入优先(1.10.0 审查修复)', () => {
+  it('显式传 reads 求和不被 existing 继承覆盖(dream merge 的语义)', async () => {
+    await store.write({ name: 'keeper', description: 'd', type: 'user', body: 'b', reads: 3 } as never, 'user')
+    await store.touch('keeper', 'user')
+    // dream.apply 形态:显式传 reads=43(求和)——此前被 mergeLifecycleMeta 的 existing.reads 覆盖
+    await store.write({ name: 'keeper', description: 'd', type: 'user', body: 'b2', reads: 43 } as never, 'user')
+    expect((await store.read('keeper', 'user'))?.reads).toBe(43)
+  })
+})

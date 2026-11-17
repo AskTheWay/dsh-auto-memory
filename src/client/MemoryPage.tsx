@@ -260,7 +260,7 @@ function projectsFromTimeline(timeline: AuditStatsFace['timeline']): ProjectRow[
  * 1.5.0:并入独立体检 tab;每行可点 = 切回记忆 tab 并直达该卡片(onLocate)。
  * 1.6.0:第四榜「已过期」+ 行内一键续期 90 天(onRenew)。
  */
-function HealthSection({ health, t, onLocate, onRenew, busy }: { health: HealthReportFace; t: Translate; onLocate: (name: string) => void; onRenew: (target: { name: string; scope: string; slug: string }) => Promise<void>; busy: boolean }): ReactNode {
+function HealthSection({ health, t, onLocate, onRenew, busy, dreamProposals, dreamApply, currentCwd }: { health: HealthReportFace; t: Translate; onLocate: (name: string) => void; onRenew: (target: { name: string; scope: string; slug: string }) => Promise<void>; busy: boolean; dreamProposals: () => Promise<{ proposals: Array<{ id: string, kind: string, targets: string[], summary: string, reason: string }>, generatedAt: number, stale?: boolean }>; dreamApply: (payload: { cwd?: string, id: string }) => Promise<Response>; currentCwd: () => string | undefined }): ReactNode {
   const scopeLabel = (scope: string): string => (scope === 'user' ? t('scopeUser') : t('scopeProject'))
   return (
     <section className="dam-stats">
@@ -362,7 +362,71 @@ function HealthSection({ health, t, onLocate, onRenew, busy }: { health: HealthR
           ))}
         </div>
       </div>
+      <DreamSection t={t} dreamProposals={dreamProposals} dreamApply={dreamApply} currentCwd={currentCwd} />
     </section>
+  )
+}
+
+/**
+ * dreaming 维护建议(1.10.0):定期回读全库产出的沉淀提案,逐条确认应用。
+ * 只建议不执行的纪律在 UI 上体现:每条独立「应用」按钮,无批量全选。
+ */
+function DreamSection({ t, dreamProposals, dreamApply, currentCwd }: { t: Translate, dreamProposals: () => Promise<{ proposals: Array<{ id: string, kind: string, targets: string[], summary: string, reason: string }>, generatedAt: number, stale?: boolean }>, dreamApply: (payload: { cwd?: string, id: string }) => Promise<Response>, currentCwd: () => string | undefined }): ReactNode {
+  const [data, setData] = useState<{ proposals: Array<{ id: string, kind: string, targets: string[], summary: string, reason: string }>, generatedAt: number, stale?: boolean } | null>(null)
+  const [applied, setApplied] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [reload, setReload] = useState(0)
+  useEffect(() => {
+    setApplied(null)
+    void dreamProposals()
+      .then(setData)
+      .catch(() => { setData({ proposals: [], generatedAt: 0 }) })
+  }, [reload])
+  if (data === null) return null
+  const list = data.proposals
+  const kindLabel = (kind: string): string =>
+    kind === 'merge' ? t('dreamMerge') : kind === 'promote' ? t('dreamPromote') : t('dreamRetire')
+  const apply = (id: string): void => {
+    if (busy) return
+    setBusy(true); setFailed(false)
+    void dreamApply({ id, ...(currentCwd() !== undefined ? { cwd: currentCwd() } : {}) })
+      .then(async response => {
+        if (!response.ok) throw new Error(String(response.status))
+        setApplied(id)
+        setReload(n => n + 1)
+      })
+      .catch(() => { setFailed(true) })
+      .finally(() => { setBusy(false) })
+  }
+  return (
+    <div className="dam-stats" style={{ marginTop: '14px' }}>
+      <header className="dam-stats-head">
+        <span className="dam-stats-glyph" aria-hidden="true"><Icon name="target" size={15} /></span>
+        <span className="dam-stats-titles">
+          <span className="dam-stats-title">{t('dreamTitle')}</span>
+          <span className="dam-stats-sub">{data.stale === true ? t('dreamStale') : t('dreamHint')}</span>
+        </span>
+      </header>
+      <div className="dam-health-cols">
+        <div className="dam-block" style={{ gridColumn: '1 / -1' }}>
+          {list.length === 0 && <p className="dam-note">{t('dreamEmpty')}</p>}
+          {list.map(p => (
+            <span key={p.id} className="dam-dream-row">
+              <span className="dam-dream-main">
+                <span className={`dam-badge dam-badge--${p.kind === 'retire' ? 'muted' : p.kind === 'promote' ? 'ok' : 'cand'}`}>{kindLabel(p.kind)}</span>
+                <code title={p.targets.join(', ')}>{p.targets.join(' + ')}</code>
+                <span className="dam-dream-summary" title={p.reason}>{p.summary}</span>
+              </span>
+              <button type="button" className="dam-btn" disabled={busy} onClick={() => { apply(p.id) }}>
+                {applied === p.id ? `✓ ${t('dreamApplied')}` : t('dreamApply')}
+              </button>
+            </span>
+          ))}
+          {failed && <p className="dam-err">{t('dreamFailed')}</p>}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -699,7 +763,7 @@ function StatsSection({ stats, t, now, groups, budgetBytes }: { stats: AuditStat
 }
 
 /** 记忆管理面板(face 方法经直通交叉成为顶层 props)。 */
-export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents, configGet, configSet }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents, configGet, configSet, dreamProposals, dreamApply }: MemoryPageProps): ReactNode {
   const [groups, setGroups] = useState<PanelGroup[] | null>(null)
   const [maxBytes, setMaxBytes] = useState(4096)
   /** 索引净预算(host 扣掉写入指导/协议壳后返回;旧宿主缺失时回退 maxBytes)。 */
@@ -1497,7 +1561,7 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
 
       <div className="dam-tabpane" data-on={activeTab === 'health' ? '1' : '0'}>
         {health !== null && showHealth && (
-          <HealthSection health={health} t={t} onLocate={jumpTo} onRenew={renewExpired} busy={busy} />
+          <HealthSection health={health} t={t} onLocate={jumpTo} onRenew={renewExpired} busy={busy} dreamProposals={dreamProposals} dreamApply={dreamApply} currentCwd={currentCwd} />
         )}
       </div>
 

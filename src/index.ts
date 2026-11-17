@@ -19,6 +19,7 @@ import { registerMemoryTools } from './tools.ts'
 import { MEMORY_SECTION, renderMemoryIndexText } from './prompt.ts'
 import { registerInjectionAudit } from './audit.ts'
 import { registerConsolidation } from './consolidate.ts'
+import { registerDreaming } from './dream.ts'
 import { registerMemoryApi } from './memory-api.ts'
 import { loadSettings, applySettings, SETTABLE_FIELDS } from './settings.ts'
 
@@ -109,6 +110,17 @@ export function apply(ctx: Context, config: Config): void {
   })
   ctx.on('session/disposed', session => { refreshed.delete(session.id); return undefined })
 
+  // 1.10.0 dreaming 建议清单(只建议不执行):门控 ≥24h 且 ≥3 会话结束,
+  // 库 <8 条不分析;路由取最近一次 agent 的 provider/model(与固化同源)。
+  const dreaming = registerDreaming(ctx, store, rootDir, () => live.autoSummarize)
+  let lastRoute: { provider: string, model: string } | undefined
+  ctx.on('agent/created', ({ agent }) => {
+    if (agent.options.provider !== undefined && agent.options.model !== undefined) {
+      lastRoute = { provider: agent.options.provider, model: agent.options.model }
+    }
+    return undefined
+  })
+
   // 唯一注入段:动态 text,每个 step 重组装时按当前 agent 的 cwd 重新求值;
   // 两层均无记忆时返回空串(整段消失,对齐 Claude Code"有记忆才注入")。
   // memory_write/delete 改动 MEMORY.md 后,下一个请求自动带上新索引(无需失效通知)。
@@ -130,5 +142,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('session/disposed', session => {
     audit.cleanup(session.id)
     consolidation.cleanup(session.id)
+    dreaming.noteSessionEnded()
+    dreaming.tryRun(() => lastRoute)
   })
 }

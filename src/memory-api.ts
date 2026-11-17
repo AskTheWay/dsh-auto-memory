@@ -26,6 +26,7 @@ import { readAudit, aggregateAudit } from './audit.ts'
 import { loadSettings, applySettings, SETTABLE_FIELDS } from './settings.ts'
 import type { SettableField, SettingsOverrides } from './settings.ts'
 import { renderAgentsExport, trustedForExport } from './export-agents.ts'
+import { loadProposals, libraryFingerprint, PROPOSALS_FILENAME } from './dream.ts'
 import { indexByteBudget } from './prompt.ts'
 import { homedir } from 'node:os'
 import type { MemoryEvidence, MemoryRecord, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
@@ -556,6 +557,84 @@ export function registerMemoryApi(
       // buildHealthReport(纯函数,tests/memory-api.spec.ts 覆盖)
       const all = await scanAllRecords(rootDir)
       return json(buildHealthReport(all))
+    },
+  })
+
+  // 1.10.0 dreaming 建议清单:读提案(带过期指纹判定)/应用提案(逐条,
+  // 用户显式确认——merge 走 supersede 谱系;promote/retire 走 store.write)
+  connection.fetch.register({
+    path: `${BASE}/dream.proposals`, methods: ['GET'], requestBody: 'buffered',
+    fetch: async () => {
+      const file = await loadProposals(rootDir)
+      if (file === null) return json({ proposals: [], generatedAt: 0 })
+      const current = libraryFingerprint(await store.listAll())
+      // 库已变化 → 提案过期,不展示(避免对已删除/已改记忆执行动作)
+      if (file.fingerprint !== current) return json({ proposals: [], generatedAt: file.generatedAt, stale: true })
+      return json({ proposals: file.proposals, generatedAt: file.generatedAt })
+    },
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/dream.apply`, methods: ['POST'], requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const body = (await request.json()) as { cwd?: string, id?: string }
+        const file = await loadProposals(rootDir)
+        if (file === null) return json({ error: 'no proposals' }, 404)
+        const current = libraryFingerprint(await store.listAllScopes())
+        if (file.fingerprint !== current) return json({ error: 'proposals stale (library changed)' }, 409)
+        const proposal = file.proposals.find(p => p.id === body.id)
+        if (proposal === undefined) return json({ error: 'unknown proposal id' }, 404)
+        const all = await store.listAllScopes()
+        const byName = new Map(all.map(r => [r.name, r]))
+        if (proposal.targets.some(t => !byName.has(t))) return json({ error: 'target missing' }, 409)
+        // 去重 + 隐藏态拒绝(审查 minor 修复:对 superseded/disabled 目标执行
+        // 会产生合并进隐藏记录/promote 无感失效;重复名导致自我 supersede)
+        const names = [...new Set(proposal.targets)]
+        if (names.length !== proposal.targets.length) return json({ error: 'duplicate targets' }, 409)
+        const targetsRecords = names.map(t => byName.get(t)!)
+        if (targetsRecords.some(r => r.status === 'superseded' || r.status === 'disputed')) return json({ error: 'target superseded/disputed' }, 409)
+        if (proposal.kind === 'merge') {
+          const targets = targetsRecords
+          const keeper = targets[0]!
+          // 合并正文 = 各 body 以分隔拼接;reads 取和;其余保留 keeper 的字段;
+          // 被合并者转 superseded+supersededBy(谱系可追溯,恢复可用)
+          const mergedBody = targets.map(t => `## ${t.name}\n${t.body}`).join('\n\n')
+          const mergedReads = targets.reduce((s, t) => s + (t.reads ?? 0), 0)
+          await store.write({
+            name: keeper.name,
+            title: keeper.title,
+            description: proposal.summary.slice(0, 160),
+            type: keeper.type,
+            body: mergedBody.slice(0, 2000),
+            pinned: keeper.pinned,
+            disabled: false, // merge 显式复活(审查:继承 existing.disabled 会让合并体永不注入)
+            ...(mergedReads > 0 ? { reads: mergedReads, lastReadMs: targets.reduce((m, t) => Math.max(m, t.lastReadMs ?? t.updatedMs ?? 0), 0) || undefined } : {}),
+          }, keeper.scope, keeper.scope === 'project' ? body.cwd : undefined)
+          for (const t of targets.slice(1)) {
+            await store.write({
+              name: t.name, title: t.title, description: t.description, type: t.type, body: t.body,
+              status: 'superseded', supersededBy: keeper.name,
+            }, t.scope, t.scope === 'project' ? body.cwd : undefined)
+          }
+        } else if (proposal.kind === 'promote') {
+          const t = targetsRecords[0]!
+          await store.write({ name: t.name, title: t.title, description: t.description, type: t.type, body: t.body, pinned: true, disabled: false }, t.scope, t.scope === 'project' ? body.cwd : undefined)
+        } else {
+          const t = targetsRecords[0]!
+          await store.write({ name: t.name, title: t.title, description: t.description, type: t.type, body: t.body, disabled: true }, t.scope, t.scope === 'project' ? body.cwd : undefined)
+        }
+        // 应用后从提案文件移除该条并落盘(其余提案保留)
+        const rest = file.proposals.filter(p => p.id !== proposal.id)
+        const { writeFileAtomic } = await import('@deepseek-ai/dsh-atomic-write')
+        const { withLockRecovery } = await import('./store.ts')
+        await withLockRecovery(join(rootDir, PROPOSALS_FILENAME), async () => {
+          await writeFileAtomic(join(rootDir, PROPOSALS_FILENAME), `${JSON.stringify({ ...file, proposals: rest }, null, 2)}\n`, { mode: 0o600 })
+        })
+        return json({ ok: true, applied: proposal.id, remaining: rest.length })
+      } catch (error) {
+        return json({ error: String(error) }, 400)
+      }
     },
   })
 

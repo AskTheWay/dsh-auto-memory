@@ -80,6 +80,9 @@ export interface MemoryFace {
     expired: Array<{ name: string; scope: string; slug: string; expiredDays: number }>;
     deadLinks: Array<{ from: string; scope: string; slug: string; target: string }>
   }>
+  /** 1.10.0 dreaming 建议清单:读提案(库变化自动过期) + 应用提案(逐条,用户确认)。 */
+  dreamProposals: () => Promise<{ proposals: Array<{ id: string; kind: string; targets: string[]; summary: string; reason: string }>; generatedAt: number; stale?: boolean }>
+  dreamApply: (payload: { cwd?: string; id: string }) => Promise<Response>
   /** 1.2.0 反向导出桥:信任态记忆 → AGENTS.md 片段(纯文本)。 */
   exportAgents: () => Promise<{ content: string; count: number }>
   /** 1.4.0 设置中心:当前生效配置 + 每字段来源(profile / 用户覆盖)。 */
@@ -142,6 +145,16 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       if (!response.ok) throw new Error(`health.report HTTP ${String(response.status)}`)
       return (await response.json()) as ReturnType<MemoryFace['healthReport']>
     },
+    dreamProposals: async () => {
+      const response = await fetch(`${BASE}/dream.proposals`, { headers: { 'cache-control': 'no-store' } })
+      if (!response.ok) throw new Error(`dream.proposals HTTP ${String(response.status)}`)
+      return (await response.json()) as ReturnType<MemoryFace['dreamProposals']>
+    },
+    dreamApply: payload => fetch(`${BASE}/dream.apply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
     exportAgents: async () => {
       const response = await fetch(`${BASE}/export.agents`, { headers: { 'cache-control': 'no-store' } })
       if (!response.ok) throw new Error(`export.agents HTTP ${String(response.status)}`)
@@ -509,6 +522,12 @@ export const PANEL_CSS = `
 .dam-import-desc{font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere;}
 .dam-badge{flex:none;align-self:center;font-size:10.5px;line-height:16px;padding:0 7px 0 6px;border-radius:999px;white-space:nowrap;border:1px solid transparent;}
 .dam-health-row .dam-badge{max-width:200px;overflow:hidden;text-overflow:ellipsis;}
+.dam-dream-row{display:flex;align-items:center;gap:8px;padding:4px 6px;margin:0 -6px;border-radius:8px;min-width:0;}
+.dam-dream-row:hover{background:var(--dsw-alias-interactive-bg-hover);}
+.dam-dream-main{flex:1;display:flex;align-items:center;gap:8px;min-width:0;}
+.dam-dream-main code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.dam-dream-summary{font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.dam-dream-row .dam-btn{flex:none;padding:3px 10px;font-size:11px;}
 .dam-badge--cand::before,.dam-badge--ok::before,.dam-badge--warn::before,.dam-badge--danger::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;margin-right:4px;vertical-align:1px;}
 .dam-badge--ok{color:var(--dsw-alias-state-success-primary,#16a34a);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16a34a) 12%,transparent);}
 .dam-badge--warn{color:var(--dsw-alias-state-warn-primary,#d97706);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#d97706) 12%,transparent);}

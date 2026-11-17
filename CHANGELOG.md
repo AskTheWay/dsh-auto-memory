@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.10.0] - 2026-11-18
+
+### Added
+
+- **Dreaming proposals** (periodic whole-library consolidation review, borrow
+  sage-mem's cheapest-first gating and hub's merge-proposal shape — proposal
+  only, never auto-applied): after ≥24h and ≥3 ended sessions (and a library
+  of ≥8 memories), a background LLM call reviews every active memory and
+  writes `proposals.json` — merge duplicates / promote anchors / retire
+  stale, each with a reason. A deterministic near-duplicate check
+  (description similarity ≥0.9, same engine as the health board) supplements
+  the LLM pass so merge candidates surface even when the model proposes
+  nothing. Proposals carry a library fingerprint and expire the moment the
+  library changes. The health tab gains a "Maintenance proposals" section —
+  one explicit Apply button per proposal (merge keeps the first target's
+  identity, concatenates bodies, sums reads, and supersedes the rest with
+  full lineage; promote/retire are pin/mute); no select-all, no auto-apply.
+  Everything failure-silent, gated on `autoSummarize`.
+
 ## [1.9.0] - 2026-11-17
 
 ### Changed
