@@ -113,53 +113,72 @@ export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd:
       }
       }
   }
-    // 超预算:按行截断(保住标题与尽可能靠前的行),尾部留截断标记。
-    // #18 相关性重排:查询词可得时,非 pinned 记忆行按"行摘要覆盖查询词"
-    // (descriptionCoverage,方向=行作 gold、查询作 produced)评分稳定重排,
-    // 相关行优先装填——同一截断窗口内相关性只影响保留与否,不影响展示序
-    // (展示序仍由三因子天粒度决定,KV 前缀稳定不破)。
-    // 超长单行被跳过而非终止循环(continue):一条臃肿行不应把它排序位置之后的
-    // 全部记忆挤出注入——审查确认的单行 DoS。
-    let lines = index.split('\n')
-    if (query !== undefined && query.trim().length > 0) {
-      const scoreOf = (line: string): number => {
-        const match = /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)
-        if (match === null) return 2 // 标题/小节行:保顶,不参与重排
-        const isPinned = line.includes(' 📌')
-        if (isPinned) return 2 // pinned 领先承诺(MEMORY_POLICY_TEXT 对用户的契约)
-        // 行内可评文本 = 链接后的摘要段(' — ' 之后) + 标题段([...] 内);
-        // 分开提取再拼接,避免贪婪正则把摘要吃掉。
-        // 方向(审查 major 修正):descriptionCoverage(gold, produced) 的分母是
-        // gold——检索相关性应为"查询词被行覆盖"(query 作 gold),行作 produced;
-        // 首版反向导致长而精确的行(词多分母大)得分低、擦边短行胜出(实测倒挂)。
-        const titlePart = line.replace(/^- \[|\].*$/, '') || match[1]!
-        const descPart = line.replace(/^- \[.*\]\([^)]*\.md\)\s*—?\s*/, '')
-        // 1.7.0:keywords 不进索引行(预算纪律),但参与相关性打分——截断时
-        // 「查询命中同义词」的行获得保留加权(无向量的语义泛化)
-        const kwPart = keywordsByName.get(match[1]!) ?? ''
-        return descriptionCoverage(query, `${titlePart} ${descPart} ${kwPart}`)
+    // 超预算:两层保底配额装填(1.9.0;审查 major 修复后重写为统一管道)。
+    // 顺序纪律:**先在原始行序上切层**(## User / ## Project 小节),再在各池
+    // 内部做相关性重排——重排在切层前会让池间行序交错、层归属错位(审查)。
+    // 装填:project(本工作区)保底 60% 净预算;user 竞争剩余 + project 余量;
+    // 两池未装填行按原序回流吃掉全部剩余。展示序=原始索引行序(装填只决定
+    // 谁活下来,不改变注入文本的行序——KV 前缀稳定);单层部署走同一管道
+    // (无 user 池时 project 池=全部行,行为与旧统一截断等价)。
+    const rawLines = index.split('\n')
+    const userZone = rawLines.findIndex(l => l === '## User memories')
+    const projectZone = rawLines.findIndex(l => l === '## Project memories')
+    const twoLayer = userZone >= 0 && projectZone > userZone
+    const header = twoLayer ? rawLines.slice(0, userZone) : []
+    const userPool = twoLayer ? rawLines.slice(userZone, projectZone) : []
+    const projectPool = twoLayer ? rawLines.slice(projectZone) : rawLines
+    const scoreOf = (line: string): number => {
+      const match = /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)
+      if (match === null) return 2 // 标题/小节行:保顶,不参与重排
+      if (line.includes(' 📌')) return 2 // pinned 领先承诺(MEMORY_POLICY_TEXT 对用户的契约)
+      // 行内可评文本 = 链接后的摘要段(' — ' 之后) + 标题段([...] 内);
+      // 方向(审查 major 修正):descriptionCoverage(gold, produced) 的分母是
+      // gold——检索相关性应为"查询词被行覆盖"(query 作 gold),行作 produced。
+      const titlePart = line.replace(/^- \[|\].*$/, '') || match[1]!
+      const descPart = line.replace(/^- \[.*\]\([^)]*\.md\)\s*—?\s*/, '')
+      // 1.7.0:keywords 不进索引行(预算纪律),但参与相关性打分(语义泛化)
+      const kwPart = keywordsByName.get(match[1]!) ?? ''
+      return descriptionCoverage(query ?? '', `${titlePart} ${descPart} ${kwPart}`)
+    }
+    const reorder = (pool: string[]): string[] => {
+      if (query === undefined || query.trim().length === 0) return pool
+      const scored = pool.map((line, i) => ({ line, i, score: scoreOf(line) }))
+      scored.sort((a, b) => b.score - a.score || a.i - b.i) // 稳定:同分保持原序
+      return scored.map(entry => entry.line)
+    }
+    const pOrdered = reorder(projectPool)
+    const uOrdered = reorder(userPool)
+    const lineSize = (line: string): number => Buffer.byteLength(line + '\n', 'utf8')
+    const take = (pool: string[], cap: number): { kept: string[], size: number } => {
+      const keptLines: string[] = []
+      let used = 0
+      for (const line of pool) {
+        if (used + lineSize(line) > cap) continue // 超长单行跳过不终止(单行 DoS 防御)
+        keptLines.push(line)
+        used += lineSize(line)
       }
-      // 稳定重排:非记忆行(标题等)与 pinned 恒 2 分保持原相对序;
-      // 记忆行按分降序(同分保持原序——Array.prototype.sort 稳定)
-      const scored = lines.map((line, i) => ({ line, i, score: scoreOf(line) }))
-      scored.sort((a, b) => b.score - a.score || a.i - b.i)
-      lines = scored.map(entry => entry.line)
+      return { kept: keptLines, size: used }
     }
-    const kept: string[] = []
-    let size = 0
-    for (const line of lines) {
-      const lineSize = Buffer.byteLength(line + '\n', 'utf8')
-      if (size + lineSize > budget) continue
-      kept.push(line)
-      size += lineSize
+    const projectCap = twoLayer ? Math.floor(budget * 0.6) : budget
+    const p = take(pOrdered, projectCap)
+    const u = twoLayer ? take(uOrdered, budget - p.size) : { kept: [], size: 0 }
+    const keptSet = new Set<string>([...header, ...p.kept, ...u.kept])
+    let usedTotal = p.size + u.size
+    // 回流:两池未装填行按原序吃掉全部剩余预算(project 余量回流给 user,
+    // user 余量回流给 project——审查修复:旧版只回流 user 且账目虚占)
+    for (const line of [...uOrdered, ...pOrdered]) {
+      if (keptSet.has(line)) continue
+      if (usedTotal + lineSize(line) > budget) continue
+      keptSet.add(line)
+      usedTotal += lineSize(line)
     }
-    // 装填后恢复展示序(重排只决定"谁活下来",不改变注入文本的行序)
-    kept.sort((a, b) => index.indexOf(a) - index.indexOf(b))
+    // 展示序 = 原始索引行序(header/节标题随原序保留)
+    const kept = rawLines.filter(l => keptSet.has(l))
     text = `${kept.join('\n')}\n…(index truncated at ${budget} bytes — call memory_list to see all)`
     injected = namesFromIndexLines(kept)
     // 多重集差集(count-based):同名记忆可合法存在于 user+project 两层,
-    // 裸 filter 会把被截掉的同名行也滤掉 → truncated 漏计、名单守恒被破
-    // (审查实测);按出现次数差集,余数进截断名单。
+    // 裸 filter 会把被截掉的同名行也滤掉 → truncated 漏计(审查实测);
+    // 按出现次数差集,余数进截断名单。
     const remain = new Map<string, number>()
     for (const name of allNames) remain.set(name, (remain.get(name) ?? 0) + 1)
     for (const name of injected) remain.set(name, (remain.get(name) ?? 1) - 1)

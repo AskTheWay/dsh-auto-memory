@@ -104,23 +104,39 @@ describe('registerInjectionAudit(按会话签名去重)', () => {
     expect(audit.text('/nowhere', 's1')).toBe('')
     expect(await readAudit(base)).toEqual([])
   })
-  it('词集懒冻结(1.6.0):未截断不取词集;首次截断才取并冻结;冻结后不再取', async () => {
-    // 一条小记忆:预算内,组装不发生截断 → getQueryText 不被调用
+  it('两层保底配额(1.9.0 审查 major 回归):双层超预算时注入非空且 project 行存活', async () => {
+    // user 大库 + project 小库,小预算——CHANGELOG 承诺的动机场景
+    for (let i = 0; i < 30; i++) {
+      await store.write({ name: `u${String(i).padStart(2, '0')}`, description: `用户事实 ${'x'.repeat(60)}`, type: 'user', body: 'b' }, 'user')
+    }
+    for (let i = 0; i < 5; i++) {
+      await store.write({ name: `p${String(i)}`, description: `项目事实 ${'y'.repeat(60)}`, type: 'project', body: 'b' }, 'project', '/w')
+    }
+    const smallConfig = { ...config, maxBytes: 2048 } as typeof config
+    const detail = renderMemoryIndexDetail(store, smallConfig, '/w')
+    expect(detail.injected.length).toBeGreaterThan(0) // 审查实证:破损版此处为 []
+    const projectSurvivors = detail.injected.filter(n => /^p\d/.test(n))
+    expect(projectSurvivors.length).toBeGreaterThan(0) // 保底 60%:project 行存活
+    expect(detail.injected.length + detail.truncated.length).toBe(35) // 名单守恒
+  })
+  it('会话注入快照(1.9.0):词集可得即定格;快照后写入不改变本会话注入', async () => {
+    // 阶段 1:无词集(首 USER 前)——动态求值,不取词集不定格
     await store.write({ name: 'alpha', description: 'd', type: 'user', body: 'b' }, 'user')
     let queryCalls = 0
-    const getQueryText = (): string => { queryCalls += 1; return '登录 缓存 重构' }
+    const getQueryText = (): string => { queryCalls += 1; return '登录 缓存' }
     const audit = registerInjectionAudit(store, config, base, getQueryText)
     audit.text('/w', 's1')
-    expect(queryCalls).toBe(0) // 预算内:词集根本不参与,不冻结
-    // 写到超预算(多行长 description 制造截断)→ 下一次组装截断发生 → 取词集冻结
+    expect(queryCalls).toBe(1) // 1.9.0 快照:词集可得即调用(取代懒冻结的"首次截断才取")
+    const snap1 = audit.text('/w', 's1')
+    expect(snap1.length).toBeGreaterThan(0)
+    // 阶段 2:定格后写入新记忆——本会话注入不变(快照直返;下会话才生效)
     for (let i = 0; i < 30; i++) {
       await store.write({ name: `bulk-${String(i).padStart(2, '0')}`, description: `事实 ${'x'.repeat(60)}`, type: 'user', body: 'b' }, 'user')
     }
-    audit.text('/w', 's1')
-    expect(queryCalls).toBe(1) // 首次截断:冻结时刻(彼时窗口可含多条 USER——懒冻结的意义)
-    audit.text('/w', 's1')
-    expect(queryCalls).toBe(1) // 已冻结:不再取
-    await audit.flush() // 排空在途审计落盘(Windows 下 teardown 与异步写竞争会 ENOTEMPTY)
+    const snap2 = audit.text('/w', 's1')
+    expect(snap2).toBe(snap1) // 快照:写入不改本会话注入
+    expect(queryCalls).toBe(1) // 词集不重取
+    await audit.flush()
     audit.cleanup('s1')
   })
 })

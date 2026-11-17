@@ -613,8 +613,9 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
 
   return {
     // 词集原料:最近 6 条 USER 行(剥前缀),拼接截 1200 字符防词集膨胀。
-    // 1.6.0 起注入侧懒冻结(首次截断才取值)——此刻窗口通常已有多条 USER,
-    // 6 条窗口真正兑现;此前冻结发生在首条 USER,窗口恒为 1 条(设计残留)
+    // 1.9.0 会话注入快照:首 USER 可得的首次组装即定格(audit.ts
+    // sessionSnapshot),主路径定格窗口恒为首 USER 单条;仅空库→首写入
+    // 延迟定格场景可见多条。1.6.0 的懒冻结已被快照取代
     getQueryText: sessionId => {
       const cap = captures.get(sessionId)
       if (cap === undefined) return undefined

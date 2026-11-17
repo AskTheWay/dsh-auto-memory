@@ -254,10 +254,24 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
 /**
  * 挂载注入审计(section text 回调用):按会话对"注入集合签名"去重,
  * 变化即追加。返回 text(注入内容本身)——审计是副作用,绝不影响返回值。
- * getQueryText(#18):会话捕获查询器(固化 handle 提供);词集**懒冻结**——
- * 只在首次真正发生截断的组装时刻取值并冻结(1.6.0 重设计;此前"第二次组装
- * 冻结"只能看到第一条 USER,getQueryText 的 6 条窗口从未兑现)。冻结后
- * 注入文本会话内字节稳定(KV-safe 的真正闸门)。
+ *
+ * 会话注入快照(1.9.0,统一并取代 1.6.0 的懒冻结词集):**首条 USER 到达后
+ * 的那次组装做一次性选择,结果定格为会话快照,此后会话内绝对不变**。
+ * - 时机对齐官方三家:Codex「会话边界注入一次,稳态回合不重建」/Claude Code
+ *   「project context 会话开始读盘」/Anthropic「按变化频率分层」;
+ * - KV 升级:dsh 0.2.x 下 section 变化=向历史**追加一整条 system message**
+ *   (capable route 不炸缓存但单调吃 token)——快照使会话内零追加、跨天零
+ *   变化,是 0.2.x 语义下的最强稳定;
+ * - 选择升级:首 USER 是任务书,快照定格时用它做一次性相关性选择(预算内
+ *   全量时无需选择),取代懒冻结的"首次截断时刻";
+ * - 行为变化(与官方 Claude Code 一致):memory_write 落盘后本会话注入不变
+ *   (工具即时可读、注入下会话生效)。
+ * 已知例外(审查确认,如实声明):无真实 USER 输入的会话(subagent 合成
+ * 注入/纯程序驱动)词集恒 undefined→永不定格,保持每组装动态求值(即
+ * 1.8.0 行为,写入即时反映,0.2.x 下会追加 system message);已定格会话的
+ * maxBytes 改动于下一会话生效(快照基准=定格时配置)。
+ * 首组装(首 USER 前)仍动态求值(不缓存):给空库→会话首写入等场景一个
+ * 在首 USER 时定格的机会。
  */
 export function registerInjectionAudit(
   store: MemoryStore, config: Config, rootDir: string,
@@ -265,33 +279,30 @@ export function registerInjectionAudit(
 ): { text: (cwd: string | undefined, sessionId: string | undefined) => string; cleanup: (sessionId: string) => void; flush: () => Promise<void> } {
   /** sessionId → 最近注入集合签名(含截断名单与 cwd——换工作区重算)。 */
   const lastSignature = new Map<string, string>()
-  /** sessionId → 冻结的相关性查询词集(#18;与 lastSignature 同生命周期)。 */
-  const frozenQuery = new Map<string, string>()
+  /** sessionId → 定格的会话注入快照文本(1.9.0;定格后直返,不再求值)。 */
+  const sessionSnapshot = new Map<string, string>()
   return {
     text: (cwd, sessionId) => {
-    let query = sessionId !== undefined ? frozenQuery.get(sessionId) : undefined
+    // 快照已定格:会话内绝对稳定——写入/跨天/索引重建都不改本会话注入
+    // (审计签名天然恒定,不再追加;0.2.x 下零追加 system message)
+    const snap = sessionId !== undefined ? sessionSnapshot.get(sessionId) : undefined
+    if (snap !== undefined) return snap
+    // 首条 USER 可得(词集源):一次性选择 + 定格快照
+    let query = sessionId !== undefined && getQueryText !== undefined ? getQueryText(sessionId) : undefined
+    if (query !== undefined && query.trim().length === 0) query = undefined
     let detail = renderMemoryIndexDetail(store, config, cwd, query)
     if (detail.text.length === 0 || sessionId === undefined || cwd === undefined) {
       // 注入转空(会话中途 delete_all/删光):不记空事件,但必须复位该会话
       // 签名——否则空档后同名集合回归会被残留签名吞掉,真实再注入漏记(审查实测)。
-      // frozenQuery 保留:词集来自用户文本与索引无关,空档后沿用无害
       if (sessionId !== undefined && detail.text.length === 0) lastSignature.delete(sessionId)
       return detail.text
     }
-    // 懒冻结(1.6.0 重设计,回应"冻结词集只见第一条 USER"的质疑):词集只在
-    // **第一次真正发生截断**的组装时刻才取值冻结——不超预算的会话词集根本
-    // 不参与输出,永远不冻结;首次截断通常发生在会话中段,彼时捕获窗口已有
-    // 多条 USER,getQueryText 的 slice(-6) 从"冻结后只见 1 条"的死窗口变成
-    // 真语义。冻结后本次组装即用词集序重算(KV 影响:注入文本仍是"会话内
-    // 恰变一次"——与旧实现"第二次组装切换词集序"同级,只是切换点推迟到
-    // 首次截断,且词集信息量严格更丰富)。
-    if (query === undefined && detail.truncated.length > 0 && sessionId !== undefined && getQueryText !== undefined) {
-      const fresh = getQueryText(sessionId)
-      if (fresh !== undefined && fresh.trim().length > 0) {
-        frozenQuery.set(sessionId, fresh)
-        query = fresh
-        detail = renderMemoryIndexDetail(store, config, cwd, query)
-      }
+    if (query !== undefined) {
+      // 快照定格纪律(1.9.0):只要首 USER 已知就定格——预算内全量也定格
+      // (字节与动态求值相同,但把「会话内不变」从输出稳定升级为显式快照,
+      // 后续写入/跨天不再进入本会话注入)。空文本不定格(空库首写入场景
+      // 留给下一次组装)。
+      sessionSnapshot.set(sessionId, detail.text)
     }
     const signature = `${cwd}\0${detail.injected.join(',')}\0|${detail.truncated.join(',')}`
     if (lastSignature.get(sessionId) === signature) return detail.text
@@ -302,7 +313,7 @@ export function registerInjectionAudit(
     })
     return detail.text
     },
-    cleanup: sessionId => { lastSignature.delete(sessionId); frozenQuery.delete(sessionId) },
+    cleanup: sessionId => { lastSignature.delete(sessionId); sessionSnapshot.delete(sessionId) },
     /** 等待在途审计落盘(测试与优雅退出用;注入路径永不 await 它)。 */
     flush: () => auditChain,
   }

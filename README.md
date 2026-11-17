@@ -159,6 +159,14 @@ Every request, one system-prompt section (order 4000) carries the index —
 re-evaluated per step, byte-budgeted, and **gone entirely when the store is
 empty**:
 
+Since 1.9.0 the index is a **session snapshot**: the assembly right after
+your first message freezes the selection for the whole session — writes land
+on disk immediately (tools can read them at once) and join the injection on
+the *next* session, keeping the session's prompt prefix absolutely stable
+(same semantics as Claude Code's official auto-memory). When the index
+exceeds budget, the current workspace's memories get a guaranteed 60% share.
+Full design: [docs/injection-design.md](docs/injection-design.md).
+
 ```
 # Persistent memory index
 ## Project memories

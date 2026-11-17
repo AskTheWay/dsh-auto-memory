@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.9.0] - 2026-11-17
+
+### Changed
+
+- **Session injection snapshot** (the injection-timing answer, unifying and
+  replacing 1.6.0's lazy query freezing): the assembly right after the first
+  user message makes a one-time selection (relevance re-rank from the task
+  statement when over budget) and **freezes it as the session snapshot —
+  from then on the session's injection is byte-identical no matter what**.
+  Writes land but take effect on the *next* session (tools can read them
+  immediately — same semantics as Claude Code's official auto-memory); on
+  dsh 0.2.x, where a section change appends a whole new system message to
+  the cached history, the snapshot makes that zero-appends; day-crossing
+  re-orders no longer touch an active session. `docs/injection-design.md`
+  records the channel decision (stay in `systemPrompt.section` for compaction
+  immunity via the protected node 0, vs the context channel's compactable
+  user snapshots) with a five-implementation ecosystem comparison.
+- **Two-layer budget quota**: when truncating, project-layer (current
+  workspace) rows get a guaranteed 60% of the net budget; user rows compete
+  for the rest plus leftovers — a large user library can no longer crowd out
+  the memories of the workspace the session is actually in.
+
 ## [1.8.0] - 2026-11-15
 
 ### Added

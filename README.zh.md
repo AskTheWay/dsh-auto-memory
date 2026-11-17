@@ -124,6 +124,11 @@ ISO `modified` → 时间戳),同名记忆跳过、绝不覆盖。
 每个请求,一个系统提示词段(order 4000)携带索引——每步重新求值、字节预算控制、
 存储为空时**整段消失**:
 
+1.9.0 起索引是**会话快照**:首条消息后的那次组装定格整个会话的选择——写入
+立即落盘(工具即刻可读),注入在**下一会话**生效,会话内提示词前缀绝对稳定
+(与 Claude Code 官方 auto-memory 同语义)。索引超预算时,当前工作区的记忆
+保底 60% 配额。完整设计见 [docs/injection-design.md](docs/injection-design.md)。
+
 ```
 # Persistent memory index
 ## Project memories
