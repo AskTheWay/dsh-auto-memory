@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 the [GitHub Releases](https://github.com/AskTheWay/dsh-auto-memory/releases)
 page (generated from this file at publish time).
 
+## [1.11.0] - 2026-11-20
+
+### Changed
+
+- **Default injection budget 4 KB → 16 KB** (Claude-Code-scale: their
+  auto-memory hard cap is 200 lines / 25 KB ≈ 10-14 KB of actual index
+  content; our 16 KB yields ~14.6 KB net ≈ 200-290 index lines). Motivated
+  by our own capacity-vs-product measurement: at 4 KB, an 80-memory library
+  silently loses 23pp of answerable questions (knowledge-update 0/5→4/5
+  when unconstrained) — a default should be safe for the library the user
+  will *have*, not the one they start with. The Focus preset keeps 4 KB
+  (signal-first, one click back); the Companion preset moves to 32 KB.
+  Existing installs are unaffected unless they relied on the schema default
+  (no settings.json override and no explicit profile config); those will
+  see larger injections after upgrading — tune down via the settings
+  center if unwanted.
 ## [1.10.0] - 2026-11-18
 
 ### Added

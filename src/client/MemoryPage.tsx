@@ -2000,7 +2000,7 @@ function SettingsCard({ t, settings, avgRowBytes, onSaved, configSet }: {
     setAutoSummarize(effective.autoSummarize === true)
   }, [effective.maxBytes, effective.minImportance, effective.staleAfterDays, effective.autoSummarize])
 
-  const preset = maxBytes <= 4096 && minImportance >= 4 ? 'focus' : maxBytes >= 8192 && minImportance <= 1 ? 'companion' : ''
+  const preset = maxBytes <= 4096 && minImportance >= 4 ? 'focus' : maxBytes >= 32768 && minImportance <= 1 ? 'companion' : ''
   const fits = Math.max(1, Math.floor((maxBytes * 0.66) / avgRowBytes))
 
   const srcBadge = (field: string): ReactNode => {
@@ -2060,7 +2060,7 @@ function SettingsCard({ t, settings, avgRowBytes, onSaved, configSet }: {
             disabled={busy}
             title={t('presetCompanionTip')}
             onClick={() => {
-              setMaxBytes(16_384)
+              setMaxBytes(32_768)
               setMinImportance(1)
             }}
           >{t('presetCompanion')}{preset === 'companion' ? ` · ${t('presetActive')}` : ''}</button>

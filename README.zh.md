@@ -158,7 +158,7 @@ ISO `modified` → 时间戳),同名记忆跳过、绝不覆盖。
 
 确定性评测层([evals/](evals/README.md))随 CI 运行——无 LLM、结果完全可复现:
 
-- **注入成本是一条平线**——真实渲染路径实测(典型 ~40 字中文摘要,默认 4 KB 预算):
+- **注入成本是一条平线**——真实渲染路径实测(典型 ~40 字中文摘要,4 KB 预算口径):
 
   | 记忆条数 | 0 | 10 | 20 | 50 | 100 | 200 |
   |---|---|---|---|---|---|---|
@@ -226,7 +226,7 @@ dsh web
 ```yaml
 - id: auto-memory
   config:
-    maxBytes: 4096          # 注入预算(索引+指导文本+协议壳)
+    maxBytes: 16384         # 注入预算(索引+指导文本+协议壳;默认值,对标 Claude Code 量级)
     memoryDir: D:/memories  # 默认: $DSH_HOME/memory
     enableUserScope: true   # false: 用户层在所有路径禁用
     autoSummarize: false         # true: 根会话结束时后台 LLM 提取持久事实写入

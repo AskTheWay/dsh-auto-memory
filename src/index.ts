@@ -47,7 +47,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  maxBytes: z.number().default(4096),
+  maxBytes: z.number().default(16_384),
   memoryDir: z.string(),
   enableUserScope: z.boolean().default(true),
   autoSummarize: z.boolean().default(false),

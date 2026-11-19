@@ -302,7 +302,7 @@ and where the defaults the runtime layer falls back to come from:
 ```yaml
 - id: auto-memory
   config:
-    maxBytes: 4096          # injection budget (index + guidance + wrapper)
+    maxBytes: 16384         # injection budget (index + guidance + wrapper; default, Claude-Code-scale)
     memoryDir: D:/memories  # default: $DSH_HOME/memory
     enableUserScope: true   # false: user layer off on every path
     autoSummarize: false         # true: on root-session end, a background LLM files durable new facts
