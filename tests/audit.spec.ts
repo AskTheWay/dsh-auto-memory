@@ -9,9 +9,9 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { MemoryStore, serializeMemory } from '../src/store.ts'
+import { MemoryStore, projectKey, serializeMemory } from '../src/store.ts'
 import type { Config } from '../src/index.ts'
-import { renderMemoryIndexDetail } from '../src/prompt.ts'
+import { indexByteBudget, renderMemoryIndexDetail } from '../src/prompt.ts'
 import {
   appendAudit, readAudit, aggregateAudit, registerInjectionAudit, AUDIT_FILENAME,
 } from '../src/audit.ts'
@@ -26,6 +26,42 @@ beforeEach(async () => {
   config = { maxBytes: 4096, enableUserScope: true, autoSummarize: false } as Config
 })
 
+it('同名同内容的跨层行各自消耗预算，旧记录保留未知作用域', async () => {
+  const cwd = '/dual-scope'
+  const longLine = '- [shared](shared.md) — ' + 'x'.repeat(Math.floor(indexByteBudget(config.maxBytes) * 0.53))
+  const source = { readIndexSync: () => longLine } as unknown as MemoryStore
+  const sample = renderMemoryIndexDetail(source, config, cwd)
+  expect(sample.textBytes).toBeLessThanOrEqual(config.maxBytes)
+  expect(sample.items).toEqual([
+    { name: 'shared', scope: 'user', included: false },
+    { name: 'shared', scope: 'project', included: true },
+  ])
+  await appendAudit(base, { ts: 1, sessionId: 'legacy', cwd, injected: ['shared'], truncated: [], bytes: 10 })
+  const audit = registerInjectionAudit(source, config, base)
+  audit.text(cwd, 'fresh')
+  await audit.flush()
+  const stats = aggregateAudit(await readAudit(base))
+  expect(stats.scopedMemories).toEqual([
+    { name: 'shared', scope: 'unknown', injectedCount: 1, truncatedCount: 0 },
+    { name: 'shared', scope: 'user', slug: '_user', injectedCount: 0, truncatedCount: 1 },
+    { name: 'shared', scope: 'project', slug: projectKey(cwd), injectedCount: 1, truncatedCount: 0 },
+  ])
+  expect(stats.timeline[1]).toMatchObject({ budget: config.maxBytes, frozen: false, items: expect.arrayContaining(sample.items) })
+})
+
+it('相同注入集合在首条用户消息定格后仍记录其快照阶段', async () => {
+  const cwd = '/frozen'
+  await store.write({ name: 'deploy', type: 'project', description: 'release', body: 'steps' }, 'project', cwd)
+  let query: string | undefined
+  const audit = registerInjectionAudit(store, config, base, () => query)
+  const first = audit.text(cwd, 's')
+  query = 'release'
+  expect(audit.text(cwd, 's')).toBe(first)
+  audit.text(cwd, 's')
+  await audit.flush()
+  expect((await readAudit(base)).map(event => event.frozen)).toEqual([false, true])
+})
+
 afterEach(async () => {
   await fsp.rm(base, { recursive: true, force: true })
 })
@@ -35,7 +71,7 @@ describe('appendAudit / readAudit', () => {
     await appendAudit(base, { ts: 1, sessionId: 's1', cwd: '/a', injected: ['x'], truncated: [], bytes: 100 })
     await appendAudit(base, { ts: 2, sessionId: 's1', cwd: '/a', injected: ['x', 'y'], truncated: [], bytes: 120 })
     // 手工写坏行与不完整尾行(崩溃残留形态)
-    await fsp.appendFile(join(base, AUDIT_FILENAME), 'not json\n{"ts":3}\n{"ts":4,"sessionId":"s2"', 'utf8')
+    await fsp.appendFile(join(base, AUDIT_FILENAME), 'not json\n{"ts":3}\n{"ts":1e999,"sessionId":"bad-date","injected":[]}\n{"ts":4,"sessionId":"s2"', 'utf8')
     const entries = await readAudit(base)
     expect(entries.map(e => e.ts)).toEqual([1, 2]) // 坏行/不完整行/字段缺失行全部跳过
   })

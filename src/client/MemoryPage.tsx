@@ -24,7 +24,7 @@ interface LibraryData {
   revision: number
 }
 
-export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents, configGet, configSet, dreamProposals, dreamApply }: MemoryPageProps): ReactNode {
+export function MemoryPage({ t, list, search, read, write, del, currentCwd, importScan, importApply, auditStats, healthReport, exportAgents, configGet, configSet, dreamProposals, dreamApply }: MemoryPageProps): ReactNode {
   const [data, setData] = useState<LibraryData | null>(null)
   const [stats, setStats] = useState<AuditStats | null>(null)
   const [health, setHealth] = useState<HealthReport | null>(null)
@@ -166,15 +166,16 @@ export function MemoryPage({ t, list, read, write, del, currentCwd, importScan, 
 
       <section className="dam-pane" id="dam-pane-library" aria-labelledby="dam-tab-library" role="tabpanel" hidden={tab !== 'library'}>
         {data === null ? refreshing && <p className="dam-note" role="status">{t('loading')}</p> : <>
-          <MemoryLibrary t={t} groups={data.groups} workspaceCwd={data.workspaceCwd} revision={data.revision} active={tab === 'library'} busy={busy} target={target}
-            read={read} write={write} del={del} act={act} onImport={() => { if (!editing && !busy) setImportOpen(true) }} onEditing={setEditing} />
           <IndexBudget t={t} data={data} />
+          <MemoryLibrary t={t} groups={data.groups} workspaceCwd={data.workspaceCwd} revision={data.revision} active={tab === 'library'} busy={busy} target={target}
+            search={search} read={read} write={write} del={del} act={act} onImport={() => { if (!editing && !busy) setImportOpen(true) }} onEditing={setEditing} />
         </>}
       </section>
 
       <section className="dam-pane" id="dam-pane-activity" aria-labelledby="dam-tab-activity" role="tabpanel" hidden={tab !== 'activity'}>
         {stats === null ? <p className="dam-note" role="status">{t(refreshing ? 'loading' : 'actionUnavailable')}</p>
-          : <MemoryActivity t={t} stats={stats} groups={data?.groups ?? []} budget={data?.budget ?? 0} active={tab === 'activity'} />}
+          : <MemoryActivity t={t} stats={stats} groups={data?.groups ?? []} budget={data?.budget ?? 0} active={tab === 'activity'}
+            loadWorkspace={auditStats} onLocate={locate} canLocate={target => find(target) !== null} />}
       </section>
 
       <section className="dam-pane" id="dam-pane-maintenance" aria-labelledby="dam-tab-maintenance" role="tabpanel" hidden={tab !== 'maintenance'}>

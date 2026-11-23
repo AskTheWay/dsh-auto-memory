@@ -122,6 +122,8 @@ edit / delete, injection statistics (per memory and per project, with budget
 truncation boards), the health board, and the Claude Code import/export
 bridges.
 
+The library searches body text and keywords in user memory and the current workspace. Record details show whether the file is listed in the current index. The activity tab filters by workspace and shows the budget and snapshot phase for each recorded injection, as well as the most recent automatic consolidation result.
+
 ![The memory panel: injection stats, trust badges, import/export](imgs/image-2.png)
 
 ## Import from Claude Code — and take it back
@@ -202,7 +204,7 @@ A deterministic evaluation layer ([evals/](evals/README.md)) runs in CI —
 no LLM, fully reproducible:
 
 - **Injection cost is a flat line** — measured on the real render path
-  (typical ~40-char descriptions, default 4 KB budget):
+  (typical ~40-char descriptions, historical 4 KiB budget):
 
   | memories | 0 | 10 | 20 | 50 | 100 | 200 |
   |---|---|---|---|---|---|---|
@@ -289,7 +291,7 @@ snapshot. Stored as overrides in the memory root's `settings.json`
 
 | field | range | default | what it does |
 | --- | --- | --- | --- |
-| `maxBytes` | 1024–65536 | 4096 | per-request injection budget |
+| `maxBytes` | 1024–65536 | 16384 | injection budget in bytes for new session snapshots |
 | `minImportance` | 0–10 | 4 | consolidation value gate (0 = off) |
 | `staleAfterDays` | 0–3650 | 0 | soft-hide zero-read memories (0 = off) |
 | `autoSummarize` | on/off | false | consolidate durable facts on session end |

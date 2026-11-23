@@ -18,6 +18,7 @@
 import type { MemoryStore } from './store.ts'
 import type { Config } from './index.ts'
 import { descriptionCoverage } from './matching.ts'
+import type { MemoryScope } from './types.ts'
 
 /** 唯一注入段(索引 + 指导合一)。 */
 export const MEMORY_SECTION = 'memory:index'
@@ -53,19 +54,21 @@ export interface InjectionDetail {
   truncated: string[]
   /** 注入段总字节(索引+指导+协议壳)。 */
   textBytes: number
+  items: InjectionItem[]
+}
+
+export interface InjectionItem {
+  name: string
+  scope: MemoryScope
+  included: boolean
 }
 
 /** 从索引行解析记忆 name(`- [标题](name.md) — 摘要`)。
  * 行首锚定 + 贪婪 .*:标题可含字面 `](fake.md)`(模型可写、导入桥取自
  * Claude 正文 H1)——贪婪回溯落到行内最后一个 `](xxx.md)` 即真实链接,
  * 最左匹配会被标题劫持记错审计身份(审查实测复现)。 */
-function namesFromIndexLines(lines: string[]): string[] {
-  const names: string[] = []
-  for (const line of lines) {
-    const match = /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)
-    if (match !== null) names.push(match[1]!)
-  }
-  return names
+export function memoryNameFromIndexLine(line: string): string | undefined {
+  return /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)?.[1]
 }
 
 /**
@@ -78,41 +81,45 @@ function namesFromIndexLines(lines: string[]): string[] {
  */
 export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd: string | undefined, query?: string): InjectionDetail {
   // 无 agent 上下文(裸组装)或 cwd 缺失时不贡献内容
-  if (cwd === undefined) return { text: '', injected: [], truncated: [], textBytes: 0 }
-  const sections: string[] = []
+  const empty: InjectionDetail = { text: '', injected: [], truncated: [], textBytes: 0, items: [] }
+  if (cwd === undefined) return empty
+  const sections: { scope: MemoryScope; text: string }[] = []
   if (config.enableUserScope) {
     const userIndex = store.readIndexSync('user')
-    if (userIndex !== null) sections.push(`## User memories\n\n${userIndex}`)
+    if (userIndex !== null) sections.push({ scope: 'user', text: `## User memories\n\n${userIndex}` })
   }
   const projectIndex = store.readIndexSync('project', cwd)
-  if (projectIndex !== null) sections.push(`## Project memories\n\n${projectIndex}`)
-  if (sections.length === 0) return { text: '', injected: [], truncated: [], textBytes: 0 }
-  const index = `# Persistent memory index\n\n${sections.join('\n\n')}`
-  // 全量名单(截断前)——审计的 truncated = 全量 - 保留
-  const allNames = namesFromIndexLines(index.split('\n'))
+  if (projectIndex !== null) sections.push({ scope: 'project', text: `## Project memories\n\n${projectIndex}` })
+  if (sections.length === 0) return empty
+  // 以行对象作为身份。跨层同名同内容也要分别装填、分别计入审计。
+  type Row = { text: string; scope?: MemoryScope; name?: string }
+  const header: Row[] = [{ text: '# Persistent memory index' }, { text: '' }]
+  const rawLines: Row[] = [...header]
+  for (const [i, section] of sections.entries()) {
+    for (const text of neutralizeBraces(section.text).split('\n')) {
+      rawLines.push({ text, scope: section.scope, name: memoryNameFromIndexLine(text) })
+    }
+    if (i < sections.length - 1) rawLines.push({ text: '', scope: section.scope })
+  }
+  const index = rawLines.map(line => line.text).join('\n')
   // 预算语义 = 整段(索引 + 写入指导 + 协议壳):先扣除指导文本、协议壳、
   // 截断标记与分隔的余量(L0 评测 index-budget 抓出的缺陷:旧实现只约束索引,
   // 拼接的 policy 尾巴可使其超预算 ~800B)
   const budget = indexByteBudget(config.maxBytes)
   let text: string
-  let injected: string[]
-  let truncated: string[]
+  let keptSet: Set<Row> | undefined
   if (Buffer.byteLength(index, 'utf8') <= budget) {
     text = index
-    injected = allNames
-    truncated = []
   } else {
     // 1.7.0:name → keywords 映射(仅超预算重排需要——审查 major 修复:从预算判断前
-    // 挪入此处,未超预算/索引回预算内时零额外 IO;跨层同名时 project 覆盖 user(窗口窄,接受并知悉)
-  // readIndexSync 同纪律——keywords 变化必然伴随写入,不破 KV)
-  const keywordsByName = new Map<string, string>()
-  if (query !== undefined && query.trim().length > 0) {
-    for (const record of store.listAllSync(cwd)) {
-      if (record.keywords !== undefined && record.keywords.length > 0) {
-        keywordsByName.set(record.name, record.keywords.join(' '))
+    // 未超预算时零额外 IO。别名按作用域绑定，同名项目不会覆盖用户记忆。
+    const hasQuery = query !== undefined && query.trim().length > 0
+    const keywordsByName = new Map<string, string>()
+    if (hasQuery) {
+      for (const record of store.listAllSync(cwd)) {
+        if (record.keywords?.length) keywordsByName.set(`${record.scope}:${record.name}`, record.keywords.join(' '))
       }
-      }
-  }
+    }
     // 超预算:两层保底配额装填(1.9.0;审查 major 修复后重写为统一管道)。
     // 顺序纪律:**先在原始行序上切层**(## User / ## Project 小节),再在各池
     // 内部做相关性重排——重排在切层前会让池间行序交错、层归属错位(审查)。
@@ -120,37 +127,32 @@ export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd:
     // 两池未装填行按原序回流吃掉全部剩余。展示序=原始索引行序(装填只决定
     // 谁活下来,不改变注入文本的行序——KV 前缀稳定);单层部署走同一管道
     // (无 user 池时 project 池=全部行,行为与旧统一截断等价)。
-    const rawLines = index.split('\n')
-    const userZone = rawLines.findIndex(l => l === '## User memories')
-    const projectZone = rawLines.findIndex(l => l === '## Project memories')
-    const twoLayer = userZone >= 0 && projectZone > userZone
-    const header = twoLayer ? rawLines.slice(0, userZone) : []
-    const userPool = twoLayer ? rawLines.slice(userZone, projectZone) : []
-    const projectPool = twoLayer ? rawLines.slice(projectZone) : rawLines
-    const scoreOf = (line: string): number => {
-      const match = /^- \[.*\]\(([^)\s]+)\.md\)/.exec(line)
-      if (match === null) return 2 // 标题/小节行:保顶,不参与重排
+    const twoLayer = sections.length === 2
+    const userPool = twoLayer ? rawLines.filter(row => row.scope === 'user') : []
+    const projectPool = twoLayer ? rawLines.filter(row => row.scope === 'project') : rawLines
+    const scoreOf = ({ text: line, name, scope }: Row): number => {
+      if (name === undefined) return 2 // 标题/小节行:保顶,不参与重排
       if (line.includes(' 📌')) return 2 // pinned 领先承诺(MEMORY_POLICY_TEXT 对用户的契约)
       // 行内可评文本 = 链接后的摘要段(' — ' 之后) + 标题段([...] 内);
       // 方向(审查 major 修正):descriptionCoverage(gold, produced) 的分母是
       // gold——检索相关性应为"查询词被行覆盖"(query 作 gold),行作 produced。
-      const titlePart = line.replace(/^- \[|\].*$/, '') || match[1]!
+      const titlePart = line.replace(/^- \[|\].*$/, '') || name
       const descPart = line.replace(/^- \[.*\]\([^)]*\.md\)\s*—?\s*/, '')
       // 1.7.0:keywords 不进索引行(预算纪律),但参与相关性打分(语义泛化)
-      const kwPart = keywordsByName.get(match[1]!) ?? ''
+      const kwPart = keywordsByName.get(`${scope}:${name}`) ?? ''
       return descriptionCoverage(query ?? '', `${titlePart} ${descPart} ${kwPart}`)
     }
-    const reorder = (pool: string[]): string[] => {
-      if (query === undefined || query.trim().length === 0) return pool
+    const reorder = (pool: Row[]): Row[] => {
+      if (!hasQuery) return pool
       const scored = pool.map((line, i) => ({ line, i, score: scoreOf(line) }))
       scored.sort((a, b) => b.score - a.score || a.i - b.i) // 稳定:同分保持原序
       return scored.map(entry => entry.line)
     }
     const pOrdered = reorder(projectPool)
     const uOrdered = reorder(userPool)
-    const lineSize = (line: string): number => Buffer.byteLength(line + '\n', 'utf8')
-    const take = (pool: string[], cap: number): { kept: string[], size: number } => {
-      const keptLines: string[] = []
+    const lineSize = (row: Row): number => Buffer.byteLength(row.text + '\n', 'utf8')
+    const take = (pool: Row[], cap: number): { kept: Row[], size: number } => {
+      const keptLines: Row[] = []
       let used = 0
       for (const line of pool) {
         if (used + lineSize(line) > cap) continue // 超长单行跳过不终止(单行 DoS 防御)
@@ -159,38 +161,40 @@ export function renderMemoryIndexDetail(store: MemoryStore, config: Config, cwd:
       }
       return { kept: keptLines, size: used }
     }
-    const projectCap = twoLayer ? Math.floor(budget * 0.6) : budget
+    const keptHeader = twoLayer ? header : []
+    const headerBytes = keptHeader.reduce((sum, row) => sum + lineSize(row), 0)
+    const available = budget - headerBytes
+    const projectCap = twoLayer ? Math.floor(available * 0.6) : available
     const p = take(pOrdered, projectCap)
-    const u = twoLayer ? take(uOrdered, budget - p.size) : { kept: [], size: 0 }
-    const keptSet = new Set<string>([...header, ...p.kept, ...u.kept])
-    let usedTotal = p.size + u.size
+    const u = twoLayer ? take(uOrdered, available - p.size) : { kept: [], size: 0 }
+    const selectedRows = new Set<Row>([...keptHeader, ...p.kept, ...u.kept])
+    let usedTotal = headerBytes + p.size + u.size
     // 回流:两池未装填行按原序吃掉全部剩余预算(project 余量回流给 user,
     // user 余量回流给 project——审查修复:旧版只回流 user 且账目虚占)
     for (const line of [...uOrdered, ...pOrdered]) {
-      if (keptSet.has(line)) continue
+      if (selectedRows.has(line)) continue
       if (usedTotal + lineSize(line) > budget) continue
-      keptSet.add(line)
+      selectedRows.add(line)
       usedTotal += lineSize(line)
     }
     // 展示序 = 原始索引行序(header/节标题随原序保留)
-    const kept = rawLines.filter(l => keptSet.has(l))
-    text = `${kept.join('\n')}\n…(index truncated at ${budget} bytes — call memory_list to see all)`
-    injected = namesFromIndexLines(kept)
-    // 多重集差集(count-based):同名记忆可合法存在于 user+project 两层,
-    // 裸 filter 会把被截掉的同名行也滤掉 → truncated 漏计(审查实测);
-    // 按出现次数差集,余数进截断名单。
-    const remain = new Map<string, number>()
-    for (const name of allNames) remain.set(name, (remain.get(name) ?? 0) + 1)
-    for (const name of injected) remain.set(name, (remain.get(name) ?? 1) - 1)
-    truncated = []
-    for (const [name, count] of remain) {
-      for (let i = 0; i < count; i++) truncated.push(name)
-    }
+    keptSet = selectedRows
+    const kept = rawLines.filter(line => selectedRows.has(line))
+    text = `${kept.map(line => line.text).join('\n')}\n…(index truncated at ${budget} bytes — call memory_list to see all)`
   }
   // 写入指导随索引一起出现(无记忆不注入,对齐 Claude Code 行为);
   // 整段包进协议壳——标签字样入库时已转义(stripMemoryTags),壳不可被内容穿透
   const full = neutralizeBraces(`${CONTEXT_OPEN}\n${CONTEXT_NOTE}\n${text}\n\n${MEMORY_POLICY_TEXT}\n${CONTEXT_CLOSE}`)
-  return { text: full, injected, truncated, textBytes: Buffer.byteLength(full, 'utf8') }
+  const items: InjectionItem[] = []
+  const injected: string[] = []
+  const truncated: string[] = []
+  for (const row of rawLines) {
+    if (row.name === undefined || row.scope === undefined) continue
+    const included = keptSet === undefined || keptSet.has(row)
+    items.push({ name: row.name, scope: row.scope, included })
+    ;(included ? injected : truncated).push(row.name)
+  }
+  return { text: full, injected, truncated, items, textBytes: Buffer.byteLength(full, 'utf8') }
 }
 
 /** 写入指导(随索引段注入):何时写、怎么写、何时不写(对齐 Claude Code 的记忆规则)。 */

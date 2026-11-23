@@ -16,8 +16,11 @@
 
 | 口径 | 注入预算 | 测什么 | 用法 |
 |---|---|---|---|
-| **capacity**(默认) | 256KB,不构成约束 | 记忆能力上限(检索/固化质量,与预算无关) | `--budget capacity` |
-| **product** | 4096,真实默认 | 含截断效应的产品体验 | `--budget product` |
+| **product**（默认） | 16 KiB（16,384 字节） | 当前默认预算下的体验 | `--budget product` |
+| **capacity** | 256 KiB | 大预算下的对照 | `--budget capacity` |
+| **legacy-4k** | 4 KiB | 历史 4 KiB 压力 | `--budget legacy-4k` |
+
+新产品档结果按预算写入 `*.product-16384.json`，4 KiB 重跑写入 `*.legacy-4k.json`。下方归档的 4 KiB 与 256 KiB 数字保留原口径。
 
 预算超限本身作为研究对象,只在**预算压力轴**(见下)显式进行。
 
@@ -137,9 +140,9 @@ judge 下口径间与自身 baseline 的对照,不是榜单数字。
 npm test                          # 轴A + 轴D 的 L0 断言(vitest 自动拾取)
 node evals/runners/l1-retrieval.mjs mini && node evals/runners/l1-retrieval.mjs standard   # 轴B
 DEEPSEEK_API_KEY=… node evals/runners/l3-consolidation.mjs mini                            # 轴B
-DEEPSEEK_API_KEY=… node evals/runners/l2-e2e.mjs mini                                       # 轴C(capacity 默认)
-DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30            # 轴C capacity
-DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30 --budget product   # 轴C product
+DEEPSEEK_API_KEY=… node evals/runners/l2-e2e.mjs mini                                       # 轴C product 默认
+DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30 --budget capacity   # 轴C capacity
+DEEPSEEK_API_KEY=… node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json> --n 30            # 轴C product 默认
 DEEPSEEK_API_KEY=… node evals/runners/l2-needle-probe.mjs <question_id>                     # 轴D
 ```
 

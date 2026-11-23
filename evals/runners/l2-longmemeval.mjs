@@ -6,14 +6,15 @@
  *   → Task-averaged Accuracy(6 类均值,论文主指标)+ Overall + Abstention 单列
  *
  * 预算口径(评测体系重构:能力与预算解耦):
- *   --budget capacity  默认。256KB——索引预算不构成约束,测「记忆能力」的真实
+ *   --budget capacity  256 KiB——索引预算不构成约束，测「记忆能力」的
  *                      上限(检索/固化质量),不被截断效应污染。
- *   --budget product   4096——真实默认预算,测含截断效应的产品体验;与
+ *   --budget product   默认。当前产品预算(16 KiB)
+ *   --budget legacy-4k 历史 4 KiB 压力口径
  *                      needle-probe(预算压力层)配合解读。
- *   两口径结果分文件落盘(*.capacity.json / *.product.json),不互相覆盖。
+ *   各预算结果分文件落盘，保留历史 *.product.json。
  *
  * 用法:
- *   node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json 路径> [--n 30] [--seed 20261] [--limit 2(试跑)] [--budget capacity|product] [--concurrency 3]
+ *   node evals/runners/l2-longmemeval.mjs --data <s_cleaned.json 路径> [--n 30] [--seed 20261] [--limit 2(试跑)] [--budget product|capacity|legacy-4k] [--concurrency 3]
  *   数据获取(唯一实测可靠通道,hf 官方域名被 DNS 污染):
  *   curl -L -o s_cleaned.json https://hf-mirror.com/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
  * 诚实声明:judge=deepseek-chat(官方为 gpt-4o-2024-08-06),分数与官方数字
@@ -29,6 +30,7 @@ import { MemoryStore, DEFAULT_IMPORTANCE } from '../../src/store.ts'
 import { renderMemoryIndexText } from '../../src/prompt.ts'
 import { buildConsolidationPrompt, parseCandidates, sanitizeCandidate, isChitchat } from '../../src/consolidate.ts'
 import { decideConsolidationAction, detectContradictions } from '../../src/matching.ts'
+import { evaluationBudget } from '../budget.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const API_KEY = process.env.DEEPSEEK_API_KEY
@@ -135,11 +137,10 @@ const byType = new Map()
 for (const r of sample) byType.set(r.question_type, (byType.get(r.question_type) ?? 0) + 1)
 console.log('  分层:', [...byType.entries()].map(([t, c]) => `${t}:${String(c)}`).join(' '))
 
-// 预算口径(评测体系重构):capacity=256KB 不构成约束(测能力上限);product=4096
+// 预算口径在 budget.ts 统一，旧 4 KiB 文件作为历史数据保留。
 // 真实默认(测含截断的产品体验)。结果分文件落盘,防止两口径互相覆盖。
-const BUDGET_MODE = arg('budget', 'capacity')
-const MAX_BYTES = BUDGET_MODE === 'product' ? 4096 : 262144
-const RESULT_FILE = BUDGET_MODE === 'product' ? 'l2-longmemeval.product.json' : 'l2-longmemeval.capacity.json'
+const { mode: BUDGET_MODE, bytes: MAX_BYTES, suffix } = evaluationBudget(arg('budget', 'product'))
+const RESULT_FILE = `l2-longmemeval.${suffix}.json`
 const CONFIG = { maxBytes: MAX_BYTES, enableUserScope: false, autoSummarize: false }
 const CWD = '/longmemeval'
 const t0 = Date.now()

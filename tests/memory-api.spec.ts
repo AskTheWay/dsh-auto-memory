@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { MemoryStore, projectKey } from '../src/store.ts'
 import { registerMemoryApi } from '../src/memory-api.ts'
+import { appendAudit } from '../src/audit.ts'
 
 const BASE = '/api/auto-memory'
 const CWD = 'D:\\api-proj'
@@ -79,6 +80,59 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fsp.rm(base, { recursive: true, force: true })
+})
+
+it('Web 全文检索返回有界正文和别名摘录，按请求作用域隔离且不计 Agent 读取', async () => {
+  mount(home)
+  const row = { name: 'shared', type: 'project' as const, description: '回顾记录' }
+  await store.write({ ...row, body: '历次发布日志。'.repeat(40) + ' 正式回滚脚本位于 scripts/rollback.ps1。' }, 'project', CWD)
+  await store.write({ ...row, body: '另一项目的回滚脚本' }, 'project', '/other')
+  await store.write({ ...row, body: '本地操作偏好', keywords: ['回滚文档'] }, 'user')
+
+  const result = await post('library.search', { query: '回滚', user: true, cwd: CWD })
+  expect(result.status).toBe(200)
+  const content = await result.json()
+  expect(content.hits).toEqual([
+    { name: 'shared', scope: 'user', slug: '_user', field: 'keywords', excerpt: '回滚文档' },
+    { name: 'shared', scope: 'project', slug: projectKey(CWD), field: 'body', excerpt: expect.stringContaining('scripts/rollback.ps1') },
+  ])
+  expect(content.hits[1].excerpt.length).toBeLessThanOrEqual(120)
+  expect((await store.read('shared', 'project', CWD))?.reads ?? 0).toBe(0)
+  const userOnly = await post('library.search', { query: '回滚', user: true })
+  expect((await userOnly.json()).hits).toHaveLength(1)
+  const projectOnly = await post('library.search', { query: 'rollback.ps', user: false, cwd: CWD })
+  expect((await projectOnly.json()).hits).toEqual([expect.objectContaining({ scope: 'project' })])
+  expect((await post('library.search', { query: ' ', user: true })).status).toBe(400)
+  expect((await post('library.search', { query: 'x'.repeat(257), user: true })).status).toBe(400)
+})
+
+it('按工作区返回注入历史及该工作区最近的固化结果', async () => {
+  mount(home)
+  const memoryRoot = join(base, 'memory-root')
+  await appendAudit(memoryRoot, { ts: 1, sessionId: 'a', cwd: CWD, injected: ['shared'], truncated: [], bytes: 100,
+    items: [{ scope: 'project', name: 'shared', included: true }], frozen: true, budget: 16_384 })
+  await appendAudit(memoryRoot, { ts: 2, sessionId: 'b', cwd: '/other', injected: ['shared'], truncated: [], bytes: 90 })
+  await appendAudit(memoryRoot, { kind: 'consolidation', ts: 3, cwd: CWD, sessionId: 'a', outcome: 'completed', candidates: 3, written: 1 })
+  await appendAudit(memoryRoot, { kind: 'consolidation', ts: 4, cwd: '/other', sessionId: 'b', outcome: 'truncated', candidates: 0, written: 0 })
+  const response = await routes.get(`${BASE}/audit.stats`)!(new Request(`http://local${BASE}/audit.stats?${new URLSearchParams({ cwd: CWD })}`))
+  expect(await response.json()).toMatchObject({
+    injections: 1, projectSlug: projectKey(CWD), workspaces: [CWD, '/other'].sort(),
+    scopedMemories: [{ name: 'shared', scope: 'project', slug: projectKey(CWD), injectedCount: 1, truncatedCount: 0 }],
+    timeline: [{ sessionId: 'a', budget: 16_384, frozen: true }],
+    consolidation: { sessionId: 'a', outcome: 'completed', candidates: 3, written: 1 },
+  })
+})
+
+it('记忆详情数据区分文件存在与当前磁盘索引存在', async () => {
+  mount(home)
+  const row = { type: 'project' as const, description: '临时记录', body: 'test' }
+  await store.write({ ...row, name: 'included' }, 'project', CWD)
+  await store.write({ ...row, name: 'expired', validUntil: 1 }, 'project', CWD)
+  const response = await routes.get(`${BASE}/groups.list`)!(new Request(`http://local${BASE}/groups.list?${new URLSearchParams({ cwd: CWD })}`))
+  const content = await response.json()
+  expect(content.groups.find((group: { current?: boolean }) => group.current)?.memories).toEqual(expect.arrayContaining([
+    expect.objectContaining({ name: 'included', indexed: true }), expect.objectContaining({ name: 'expired', indexed: false }),
+  ]))
 })
 
 describe('import.claude.scan / apply(0.10.0)', () => {

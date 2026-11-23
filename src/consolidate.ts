@@ -31,6 +31,7 @@ import { normalizeName, asMemoryType, DEFAULT_IMPORTANCE } from './store.ts'
 import { decideConsolidationAction, detectContradictions, words } from './matching.ts'
 import { collectInstructionDigest } from './instructions.ts'
 import type { MemoryEvidence, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
+import type { ConsolidationRun } from './audit.ts'
 
 // dsh-subagent 在 AgentOptions 上声明的字段(此处同样声明合并,不引入对
 // dsh-subagent 的依赖;SessionHeader.delegationDepth 官方类型已有,无需重复声明)
@@ -361,7 +362,9 @@ export interface ConsolidationHandle {
   cleanup: (sessionId: string) => void
 }
 
-export function registerConsolidation(ctx: Context, store: MemoryStore, options: ConsolidationOptions): ConsolidationHandle {
+export function registerConsolidation(ctx: Context, store: MemoryStore, options: ConsolidationOptions,
+  recordResult?: (run: ConsolidationRun) => Promise<void>,
+): ConsolidationHandle {
   const captures = new Map<string, SessionCapture>()
   // autoSummarize=false 时无固化,但仍保留 USER 捕获(#18 相关性截断的词集源,
   // 与固化开关解耦——注入侧的相关性不应依赖后台总结是否开启)
@@ -424,19 +427,20 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
     }
     const cwd = cap.cwd ?? agent.session.header.cwd
     if (cwd === undefined) return
-    const provider = agent.options.provider
-    const model = agent.options.model
-    if (provider === undefined || model === undefined) return // 无路由信息,放弃(静默)
-    // 机会式获取 llm 服务:autoSummarize 部署(base)必有;无服务的组合(如测试栈)静默跳过
-    const llm = ctx.get('llm')
-    if (llm === undefined) return
 
     const task = (async (): Promise<void> => {
+      let outcome: ConsolidationRun['outcome'] = 'failed'
+      let written = 0
+      let candidateCount = 0
       try {
         // 空转写直接跳过(1.8.0 审查 minor):tool/call 污染标记可给仅有工具
         // 调用、零用户/助手转写的会话创建捕获——空 transcript 喂给 LLM 是
         // 纯浪费且产物必为 []
-        if (cap.lines.length === 0) return
+        if (cap.lines.length === 0) { outcome = 'no-transcript'; return }
+        const { provider, model } = agent.options
+        if (provider === undefined || model === undefined) { outcome = 'no-route'; return }
+        const llm = ctx.get('llm')
+        if (llm === undefined) { outcome = 'unavailable'; return }
         const existing = await store.listAll(cwd)
         // 工作区指令链摘要(0.7.2):固化模型看不到基线消息,喂摘要防重复固化;
         // 读取失败静默降级为无摘要,绝不影响固化本身
@@ -470,8 +474,9 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           ctx.logger.warn('[dsh-auto-memory] consolidation llm failed')
           return
         }
-        if (finish.kind === 'aborted') return // teardown 中止属正常,不告警
+        if (finish.kind === 'aborted') { outcome = 'aborted'; return }
         if (finish.kind === 'max-tokens') {
+          outcome = 'truncated'
           // 审查 minor:evidence 抬高输出体积后截断边际变窄——截断会让
           // parseCandidates 找不到尾 ] 而整批丢弃,必须与"模型格式错误"可区分
           ctx.logger.warn('[dsh-auto-memory] consolidation output truncated at max_tokens; raising autoSummarizeMaxTokens is recommended')
@@ -483,10 +488,11 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           .join('\n')
         const candidates = parseCandidates(text)
         if (candidates === null) {
+          outcome = 'invalid-output'
           ctx.logger.warn('[dsh-auto-memory] consolidation output was not a JSON array; skipped')
           return
         }
-        let written = 0
+        candidateCount = candidates.length
         for (const raw of candidates) {
           if (written >= options.autoSummarizeMaxMemories) break
           const candidate = sanitizeCandidate(raw, options.enableUserScope, { sessionId: agent.session.id, transcript: cap.lines.join('\n\n') })
@@ -589,9 +595,15 @@ export function registerConsolidation(ctx: Context, store: MemoryStore, options:
           await store.write(withValidUntil(candidate), candidate.scope, cwd)
           written += 1
         }
+        outcome = 'completed'
         if (written > 0) ctx.logger.info(`[dsh-auto-memory] consolidated ${written} memor${written === 1 ? 'y' : 'ies'}`)
       } catch (error) {
         ctx.logger.warn(`[dsh-auto-memory] consolidation failed: ${String(error)}`)
+      } finally {
+        try {
+          await recordResult?.({ kind: 'consolidation', ts: Date.now(), cwd, sessionId: agent.session.id,
+            outcome, candidates: candidateCount, written })
+        } catch { /* 审计失败不能改变固化结果。 */ }
       }
     })()
     active.add(task)

@@ -17,11 +17,12 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { MemoryStore } from './store.ts'
 import { registerMemoryTools } from './tools.ts'
 import { MEMORY_SECTION, renderMemoryIndexText } from './prompt.ts'
-import { registerInjectionAudit } from './audit.ts'
+import { appendAudit, registerInjectionAudit } from './audit.ts'
 import { registerConsolidation } from './consolidate.ts'
 import { registerDreaming } from './dream.ts'
 import { registerMemoryApi } from './memory-api.ts'
 import { loadSettings, applySettings, SETTABLE_FIELDS } from './settings.ts'
+import { DEFAULT_MAX_BYTES } from './budget.ts'
 
 export const name = 'dsh-auto-memory'
 export const inject = ['tools', 'systemPrompt']
@@ -47,7 +48,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  maxBytes: z.number().default(16_384),
+  maxBytes: z.number().default(DEFAULT_MAX_BYTES),
   memoryDir: z.string(),
   enableUserScope: z.boolean().default(true),
   autoSummarize: z.boolean().default(false),
@@ -90,7 +91,7 @@ export function apply(ctx: Context, config: Config): void {
   // 同时把会话捕获查询器交给注入侧(#18 相关性截断的词集来源)。
   // 1.4.0:传 live 对象(含 Config 超集字段,结构兼容)——autoSummarize/
   // minImportance 等在设置变更后的下一次会话/候选即时生效
-  const consolidation = registerConsolidation(ctx, store, live)
+  const consolidation = registerConsolidation(ctx, store, live, run => appendAudit(rootDir, run))
 
   // P1:软淘汰/有效期的会话启动评估:两者都是索引重建时的惰性评估,
   // 无新写入的仓库永远等不到重建——每个会话首 agent 创建时刷新一次两层索引。

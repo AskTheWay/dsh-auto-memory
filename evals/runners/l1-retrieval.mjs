@@ -13,10 +13,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { MemoryStore, serializeMemory } from '../../src/store.ts'
 import { renderMemoryIndexText } from '../../src/prompt.ts'
+import { DEFAULT_MAX_BYTES } from '../../src/budget.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATASETS = join(HERE, '..', 'datasets', 'harness-sessions')
-const CONFIG = { maxBytes: 4096, enableUserScope: true, autoSummarize: false }
+const CONFIG = { maxBytes: DEFAULT_MAX_BYTES, enableUserScope: true, autoSummarize: false }
 
 const datasetName = process.argv[2] ?? 'mini'
 const dataset = JSON.parse(await readFile(join(DATASETS, `${datasetName}.json`), 'utf8'))

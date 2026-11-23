@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { MemoryStore } from '../../src/store.ts'
 import { renderMemoryIndexText } from '../../src/prompt.ts'
 import { buildConsolidationPrompt, parseCandidates, sanitizeCandidate } from '../../src/consolidate.ts'
+import { evaluationBudget } from '../budget.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATASETS = join(HERE, '..', 'datasets', 'harness-sessions')
@@ -75,8 +76,9 @@ console.log('阶段 2/3:探针问答(WITH / WITHOUT 双组)')
 // 触发截断——capacity/product 两口径在本数据集等价;参数化只为纪律统一。
 // 场景一旦换大记忆库,--budget product 才开始测截断效应。
 const argIdx = (name) => process.argv.indexOf(`--${name}`)
-const BUDGET_MODE = argIdx('budget') >= 0 ? process.argv[argIdx('budget') + 1] : 'capacity'
-const CONFIG = { maxBytes: BUDGET_MODE === 'product' ? 4096 : 262144, enableUserScope: true, autoSummarize: false }
+const budgetIndex = argIdx('budget')
+const { mode: BUDGET_MODE, bytes: maxBytes, suffix } = evaluationBudget(budgetIndex >= 0 ? process.argv[budgetIndex + 1] : undefined)
+const CONFIG = { maxBytes, enableUserScope: true, autoSummarize: false }
 const cwds = [...new Set(dataset.persona.workspaces)]
 const withIndex = cwds.map(cwd => renderMemoryIndexText(store, CONFIG, cwd)).filter(t => t.length > 0).join('\n\n')
 const emptyStore = new MemoryStore(await mkdtemp(join(tmpdir(), 'l2-empty-')))
@@ -139,7 +141,7 @@ const withAbstain = acc(abstentions, 'with')
 const withoutAbstain = acc(abstentions, 'without')
 
 const result = {
-  dataset: datasetName, model: MODEL, date: new Date().toISOString(),
+  dataset: datasetName, model: MODEL, date: new Date().toISOString(), budgetMode: BUDGET_MODE, maxBytes,
   probes: { scored: scored.length, abstention: abstentions.length },
   metrics: {
     e2eRecall: Number((withScored * 100).toFixed(1)),
@@ -153,5 +155,5 @@ const result = {
 console.log(`\n[L2] 端到端(with 记忆): ${result.metrics.e2eRecall}% | baseline(无记忆): ${result.metrics.baselineRecall}% | lift: ${result.metrics.lift > 0 ? '+' : ''}${result.metrics.lift}%`)
 console.log(`     拒答正确率 with ${result.metrics.abstentionWith}% / without ${result.metrics.abstentionWithout}%`)
 await mkdir(join(HERE, '..', 'results'), { recursive: true })
-await writeFile(join(HERE, '..', 'results', `l2-${datasetName}.json`), JSON.stringify(result, null, 2) + '\n', 'utf8')
+await writeFile(join(HERE, '..', 'results', `l2-${datasetName}.${suffix}.json`), JSON.stringify(result, null, 2) + '\n', 'utf8')
 await rm(root, { recursive: true, force: true })

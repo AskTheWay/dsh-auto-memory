@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { DEFAULT_MAX_BYTES } from '../budget.ts'
 import type { MemoryFace } from './index.ts'
 import { formatBytes, type SettingsView, type Translate } from './panel-model.tsx'
 
@@ -11,7 +12,7 @@ const fields = {
 
 const presets = [
   { label: 'presetFocus', maxBytes: 4096, minImportance: 4 },
-  { label: 'presetBalanced', maxBytes: 16_384, minImportance: 4 },
+  { label: 'presetBalanced', maxBytes: DEFAULT_MAX_BYTES, minImportance: 4 },
   { label: 'presetCompanion', maxBytes: 32_768, minImportance: 1 },
 ] as const
 
@@ -103,7 +104,7 @@ export function MemorySettings({ t, settings, busy, configSet, act }: SettingsPr
     </section>
     <div className="dam-settings-actions">
       <button type="submit" className="dam-btn dam-btn-primary" disabled={busy || !hasChanges}>{t('setSave')}</button>
-      {hasChanges && <span className="dam-note">{t('settingsDraft')}</span>}
+      {hasChanges && <span className="dam-note dam-settings-draft">{t('settingsDraft')}</span>}
       {saved && <span className="dam-note" role="status">{t('setSaved')}</span>}
     </div>
   </form>

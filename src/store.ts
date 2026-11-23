@@ -348,7 +348,7 @@ export function isStale(record: MemoryRecord, staleAfterDays: number, nowMs: num
  * 语义与 disabled/stale 同族:**隐藏不删除**——不注入、文件保留、可续期复活。
  * 不豁免 pinned:用户显式设的保质期是最强信号(不想过期就别设)。
  */
-export function isExpired(record: MemoryRecord, nowMs: number): boolean {
+export function isExpired(record: Pick<MemoryRecord, 'validUntil'>, nowMs: number): boolean {
   return record.validUntil !== undefined && record.validUntil > 0 && record.validUntil <= nowMs
 }
 
@@ -525,7 +525,8 @@ export class MemoryStore {
   }
 
   /** 列出指定作用域全部记忆(畸形文件与 symlink 跳过;按 name 稳定排序)。 */
-  async list(scope: MemoryScope, cwd?: string): Promise<MemoryRecord[]> {
+  async list(scope: MemoryScope, cwd?: string, signal?: AbortSignal): Promise<MemoryRecord[]> {
+    signal?.throwIfAborted()
     const dir = this.dir(scope, cwd)
     let dirents
     try {
@@ -534,15 +535,19 @@ export class MemoryStore {
       return [] // 目录不存在 = 无记忆
     }
     const records: MemoryRecord[] = []
-    for (const dirent of dirents) {
-      if (!dirent.isFile() || !dirent.name.endsWith('.md')) continue
-      if (dirent.name.toLowerCase() === INDEX_FILENAME.toLowerCase()) continue
-      const file = join(dir, dirent.name)
-      if (isSymlink(file)) continue
-      const raw = await fsp.readFile(file, 'utf8').catch(() => null)
-      const record = raw === null ? null : parseMemory(raw, scope)
-      if (record) records.push(record)
+    const files = dirents.filter(entry => entry.isFile() && entry.name.endsWith('.md') && entry.name.toLowerCase() !== INDEX_FILENAME.toLowerCase())
+    const batchSize = 16
+    for (let start = 0; start < files.length; start += batchSize) {
+      signal?.throwIfAborted()
+      const batch = await Promise.all(files.slice(start, start + batchSize).map(async entry => {
+        const file = join(dir, entry.name)
+        if (isSymlink(file)) return null
+        const raw = await fsp.readFile(file, 'utf8').catch(() => null)
+        return raw === null ? null : parseMemory(raw, scope)
+      }))
+      for (const record of batch) if (record !== null) records.push(record)
     }
+    signal?.throwIfAborted()
     return records.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   }
 

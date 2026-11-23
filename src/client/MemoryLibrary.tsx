@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { MemoryFace } from './index.ts'
+import type { LibrarySearchHit } from '../recall.ts'
 import {
   entryKey, entryTitle, formatBytes, formatDate, groupName, Icon, matchesStatus, memoryStatuses,
   MemoryStatus, memoryTypeLabel, memoryTypes, type PanelEntry, type PanelGroup, type PanelMemory, type Translate,
@@ -7,6 +8,7 @@ import {
 
 type MemoryPatch = Partial<Parameters<MemoryFace['write']>[0]>
 type BodyResult = { key: string; body: string } | { key: string; failed: true }
+type SearchResult = { key: string; hits: LibrarySearchHit[] } | { key: string; failed: true }
 
 interface LibraryProps {
   t: Translate
@@ -16,6 +18,7 @@ interface LibraryProps {
   active: boolean
   busy: boolean
   target: PanelEntry | null
+  search: MemoryFace['search']
   read: MemoryFace['read']
   write: MemoryFace['write']
   del: MemoryFace['del']
@@ -24,7 +27,7 @@ interface LibraryProps {
   onEditing: (editing: boolean) => void
 }
 
-export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy, target, read, write, del, act, onImport, onEditing }: LibraryProps): ReactNode {
+export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy, target, search, read, write, del, act, onImport, onEditing }: LibraryProps): ReactNode {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState('all')
   const [kind, setKind] = useState('all')
@@ -32,6 +35,7 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [showDetail, setShowDetail] = useState(false)
   const [bodyResult, setBodyResult] = useState<BodyResult | null>(null)
+  const [searchResult, setSearchResult] = useState<SearchResult | null>(null)
   const [readRetry, setReadRetry] = useState(0)
   const [editing, setEditing] = useState<{ entry: PanelEntry; body: string; cwd: string | undefined } | null>(null)
   const [deleteKey, setDeleteKey] = useState<string | null>(null)
@@ -42,6 +46,27 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
   const total = groups.reduce((n, g) => n + g.memories.length, 0)
   const needle = query.trim().toLowerCase()
   const filtering = needle.length > 0 || scope !== 'all' || kind !== 'all' || status !== 'all'
+  const searchUser = scope === 'all' || scope === 'user'
+  const searchCwd = scope === 'all' || scope === 'current' || scope === 'project' ? workspaceCwd : undefined
+  const searchKey = JSON.stringify([needle, searchUser, searchCwd, revision])
+  const needsSearch = needle.length > 0 && (searchUser || searchCwd !== undefined)
+  const currentSearch = needsSearch && searchResult?.key === searchKey ? searchResult : null
+  const searching = needsSearch && currentSearch === null
+
+  useEffect(() => {
+    if (!active || !needsSearch) return
+    const request = new AbortController()
+    const timer = setTimeout(() => {
+      void search({ query: needle, user: searchUser, cwd: searchCwd }, request.signal)
+        .then(({ hits }) => { if (!request.signal.aborted) setSearchResult({ key: searchKey, hits }) })
+        .catch(() => { if (!request.signal.aborted) setSearchResult({ key: searchKey, failed: true }) })
+    }, 180)
+    return () => { clearTimeout(timer); request.abort() }
+  }, [active, needsSearch, needle, searchUser, searchCwd, searchKey, search])
+
+  const searchHits = useMemo(() => new Map(currentSearch !== null && 'hits' in currentSearch
+    ? currentSearch.hits.map(hit => [JSON.stringify([hit.scope, hit.slug, hit.name]), hit])
+    : []), [currentSearch])
 
   const results = useMemo(() => groups
     .filter(group => scope === 'all' || group.scope === scope || (scope === 'current' && group.current)
@@ -51,9 +76,10 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
     .map(group => ({ group, memories: group.memories.filter(memory =>
       (kind === 'all' || memory.type === kind)
       && matchesStatus(memory, status)
-      && (!needle || `${entryTitle(memory)}\n${memory.description}\n${memory.name}`.toLowerCase().includes(needle)),
+      && (!needle || `${entryTitle(memory)}\n${memory.description}\n${memory.name}`.toLowerCase().includes(needle)
+        || searchHits.has(JSON.stringify([group.scope, group.slug, memory.name]))),
     ) }))
-    .filter(result => result.memories.length > 0), [groups, scope, kind, status, needle])
+    .filter(result => result.memories.length > 0), [groups, scope, kind, status, needle, searchHits])
 
   const matches = results.reduce((n, row) => n + row.memories.length, 0)
   const first = results[0]
@@ -168,7 +194,7 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
     <div className="dam-library-tools">
       <div className="dam-search">
         <Icon name="search" size={16} />
-        <input ref={searchRef} type="search" name="memory-search" autoComplete="off" spellCheck={false}
+        <input ref={searchRef} type="search" name="memory-search" autoComplete="off" spellCheck={false} maxLength={256}
           value={query} placeholder={t('searchPlaceholder')} aria-label={t('searchPlaceholder')}
           disabled={editing !== null} onChange={event => { setQuery(event.target.value); setShowDetail(false); setDeleteKey(null) }} />
         {query && <button type="button" className="dam-icon-btn" aria-label={t('clearSearch')} disabled={editing !== null}
@@ -197,12 +223,15 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
         </select>
       </div>
     </div>
+    {needle && <p className="dam-note dam-search-status" role="status">{t(searching ? 'searchingBodies'
+      : currentSearch !== null && 'failed' in currentSearch ? 'searchBodyFailed'
+        : !needsSearch ? 'searchMetadataOnly' : 'searchBodyScope')}</p>}
 
     {total === 0 ? <div className="dam-empty">
       <h2>{t('emptyTitle')}</h2><p>{t('emptyLibrary')}</p>
       <button type="button" className="dam-btn" onClick={onImport}>{t('importBtn')}</button>
     </div> : matches === 0 && !editing ? <div className="dam-empty">
-      <h2>{t('noSearchHits')}</h2>
+      <h2>{t(searching ? 'searchingBodies' : 'noSearchHits')}</h2>
       <button type="button" className="dam-btn" onClick={resetFilters}>{t('clearFilters')}</button>
     </div> : <div className="dam-library-grid" data-detail={showDetail ? 'open' : 'closed'}>
       <section className="dam-record-list" aria-label={t('resultList')}>
@@ -221,13 +250,15 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
           <ul className="dam-records">
             {memories.map(memory => {
               const key = entryKey(group, memory.name)
+              const hit = searchHits.get(JSON.stringify([group.scope, group.slug, memory.name]))
+              const summary = hit === undefined ? memory.description : `${t(hit.field === 'body' ? 'searchHitBody' : 'searchHitKeyword')} · ${hit.excerpt}`
               return <li key={key}><button type="button" className="dam-record" id={`dam-record-${key}`} data-kind={memory.type} aria-current={key === activeKey ? 'true' : undefined}
                 disabled={editing !== null && key !== activeKey} onClick={() => { choose(group, memory) }}>
                 <span className="dam-record-main">
                   <span className="dam-record-title">
                     <span className="dam-ellipsize">{entryTitle(memory)}</span>{memory.pinned && <Icon name="pin" size={13} />}
                   </span>
-                  <span className="dam-record-summary"><span className="dam-record-kind">{memoryTypeLabel(memory.type, t)}</span><span className="dam-ellipsize">{memory.description}</span></span>
+                  <span className="dam-record-summary"><span className="dam-record-kind">{memoryTypeLabel(memory.type, t)}</span><span className="dam-ellipsize" title={summary}>{summary}</span></span>
                 </span>
                 <MemoryStatus memory={memory} t={t} />
                 <span className="dam-record-reads">{memory.reads}</span>
@@ -253,6 +284,7 @@ export function MemoryLibrary({ t, groups, workspaceCwd, revision, active, busy,
             <dl className="dam-record-facts">
               <div><dt>{t('memoryState')}</dt><dd className="dam-detail-states"><MemoryStatus memory={entry.memory} t={t} includeTrust /></dd></div>
               <div><dt>{t('memoryReads')}</dt><dd>{entry.memory.reads}</dd></div>
+              {entry.memory.indexed !== undefined && <div><dt>{t('diskIndex')}</dt><dd>{t(entry.memory.indexed ? 'indexIncluded' : 'indexExcluded')}</dd></div>}
               {entry.memory.updatedMs !== undefined && <div><dt>{t('recordUpdated')}</dt><dd>{formatDate(entry.memory.updatedMs)}</dd></div>}
               {entry.memory.validUntilMs !== undefined && <div><dt>{t('recordValidity')}</dt><dd>{formatDate(entry.memory.validUntilMs)}</dd></div>}
               {entry.memory.supersededBy && lineage(t('successor'), entry.memory.supersededBy, entry.group)}

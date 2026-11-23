@@ -1,8 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { formatBytes, formatDate, workspaceName, type AuditEntry, type AuditStats, type PanelGroup, type ProjectAudit, type Translate } from './panel-model.tsx'
+import type { MemoryFace } from './index.ts'
+import type { ConsolidationRun } from '../audit.ts'
+import { USER_SCOPE_DIR } from '../types.ts'
+import { formatBytes, formatDate, groupName, workspaceName, type AuditEntry, type AuditStats, type MemoryTarget, type PanelGroup, type ProjectAudit, type Translate } from './panel-model.tsx'
 
-type ActivityProps = { t: Translate; stats: AuditStats; groups: PanelGroup[]; budget: number; active: boolean }
+type Navigation = { onLocate: (target: MemoryTarget) => void; canLocate: (target: MemoryTarget) => boolean }
+type ViewProps = Navigation & { t: Translate; stats: AuditStats; groups: PanelGroup[]; budget: number; active: boolean }
+type ActivityProps = ViewProps & { loadWorkspace: MemoryFace['auditStats'] }
 type SortKey = 'injected' | 'truncated' | 'reads'
+type WorkspaceResult = { cwd: string; source: AuditStats; data: AuditStats | null }
+
+const outcomeLabels = {
+  completed: 'auditRunCompleted', 'no-transcript': 'auditRunNoTranscript', 'no-route': 'auditRunNoRoute', unavailable: 'auditRunUnavailable',
+  truncated: 'auditRunTruncated', 'invalid-output': 'auditRunInvalid', aborted: 'auditRunAborted', failed: 'auditRunFailed',
+} as const satisfies Record<ConsolidationRun['outcome'], Parameters<Translate>[0]>
+
+function memoryIdentity({ scope, slug, name }: MemoryTarget): string {
+  return JSON.stringify([scope, slug, name])
+}
 
 function projectRows(timeline: AuditEntry[]): ProjectAudit[] {
   const grouped = Map.groupBy(timeline, record => record.cwd)
@@ -16,7 +31,40 @@ function projectRows(timeline: AuditEntry[]): ProjectAudit[] {
   })).sort((a, b) => b.injections - a.injections || b.lastTs - a.lastTs)
 }
 
-export function MemoryActivity({ t, stats, groups, budget, active }: ActivityProps): ReactNode {
+export function MemoryActivity({ t, stats, active, loadWorkspace, ...view }: ActivityProps): ReactNode {
+  const [chosenWorkspace, setWorkspace] = useState('')
+  const [result, setResult] = useState<WorkspaceResult | null>(null)
+  const [retry, setRetry] = useState(0)
+  const workspaces = stats.workspaces ?? []
+  const workspace = workspaces.includes(chosenWorkspace) ? chosenWorkspace : ''
+  const current = result?.cwd === workspace && result.source === stats ? result : null
+  const selected = workspace === '' ? stats : current?.data
+
+  useEffect(() => {
+    if (!active || workspace === '') return
+    const request = new AbortController()
+    void loadWorkspace(workspace, request.signal)
+      .then(data => { if (!request.signal.aborted) setResult({ cwd: workspace, source: stats, data }) })
+      .catch(() => { if (!request.signal.aborted) setResult({ cwd: workspace, source: stats, data: null }) })
+    return () => request.abort()
+  }, [active, workspace, stats, retry, loadWorkspace])
+
+  return <>
+    {workspaces.length > 0 && <div className="dam-audit-toolbar">
+      <label htmlFor="dam-audit-workspace">{t('auditWorkspace')}</label>
+      <select id="dam-audit-workspace" className="dam-select" value={workspace} onChange={event => setWorkspace(event.target.value)}>
+        <option value="">{t('projectScope')}</option>
+        {workspaces.map(cwd => <option key={cwd} value={cwd}>{cwd === 'unknown' ? t('auditUnknownWorkspace') : cwd}</option>)}
+      </select>
+    </div>}
+    {selected ? <ActivityView key={workspace} t={t} stats={selected} active={active} {...view} />
+      : current?.data === null ? <div className="dam-actions" role="alert"><p className="dam-note">{t('actionUnavailable')}</p>
+        <button type="button" className="dam-btn" onClick={() => { setResult(null); setRetry(n => n + 1) }}>{t('retry')}</button></div>
+        : <p className="dam-note" role="status">{t('loading')}</p>}
+  </>
+}
+
+function ActivityView({ t, stats, groups, budget, active, onLocate, canLocate }: ViewProps): ReactNode {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<SortKey>('injected')
   const [showAllMemories, setShowAllMemories] = useState(false)
@@ -40,17 +88,32 @@ export function MemoryActivity({ t, stats, groups, budget, active }: ActivityPro
   }, [active, selected?.key])
 
   const memoryRows = useMemo(() => {
-    const rows = new Map(stats.memories.map(record => [record.name, { name: record.name, injected: record.injectedCount, truncated: record.truncatedCount ?? 0, reads: 0 }]))
+    const known = stats.scopedMemories ?? stats.memories.map(record => ({ name: record.name, scope: 'unknown', injectedCount: record.injectedCount, truncatedCount: record.truncatedCount ?? 0 }))
+    const rows = new Map<string, { target: MemoryTarget; injected: number; truncated: number; reads?: number }>(known.map(record => [
+      memoryIdentity(record), { target: record, injected: record.injectedCount, truncated: record.truncatedCount },
+    ]))
     for (const group of groups) {
+      if (stats.projectSlug === null) break // 旧日志没有工作区，无法归因到任何现存条目。
+      if (stats.projectSlug !== undefined && group.scope === 'project' && group.slug !== stats.projectSlug) continue
       for (const memory of group.memories) {
-        const row = rows.get(memory.name) ?? { name: memory.name, injected: 0, truncated: 0, reads: 0 }
-        row.reads += memory.reads
-        rows.set(memory.name, row)
+        const target = { scope: group.scope, slug: group.slug, name: memory.name }
+        const key = memoryIdentity(target)
+        const previous = rows.get(key)
+        if (previous || memory.reads > 0) rows.set(key, { target, injected: previous?.injected ?? 0, truncated: previous?.truncated ?? 0, reads: memory.reads })
       }
     }
-    return [...rows.values()].filter(row => row.injected + row.truncated + row.reads > 0)
-      .sort((a, b) => b[sortBy] - a[sortBy] || a.name.localeCompare(b.name))
-  }, [stats.memories, groups, sortBy])
+    return [...rows.values()].sort((a, b) => (b[sortBy] ?? -1) - (a[sortBy] ?? -1) || a.target.name.localeCompare(b.target.name))
+  }, [stats.memories, stats.scopedMemories, stats.projectSlug, groups, sortBy])
+
+  const scopeLabel = (target: MemoryTarget): string => {
+    if (target.scope === 'unknown') return t('auditScopeUnknown')
+    if (target.scope === 'user') return t('userScopeShort')
+    const group = groups.find(group => group.scope === target.scope && group.slug === target.slug)
+    return group === undefined ? target.slug ?? t('projectScope') : groupName(group, undefined, t)
+  }
+  const renderTarget = (target: MemoryTarget): ReactNode => target.scope !== 'unknown' && target.slug !== undefined && canLocate(target)
+    ? <button type="button" className="dam-text-action" onClick={() => onLocate(target)}>{target.name}</button>
+    : <span className="dam-ellipsize" title={target.name}>{target.name}</span>
 
   return <div className="dam-activity">
     <section className="dam-activity-overview" aria-labelledby="dam-activity-title">
@@ -99,17 +162,33 @@ export function MemoryActivity({ t, stats, groups, budget, active }: ActivityPro
             </div>
             <dl className="dam-event-metrics">
               <div><dt>{t('auditVolume')}</dt><dd>{formatBytes(selected.record.bytes)}</dd></div>
+              {selected.record.budget !== undefined && <div><dt>{t('auditHistoricalBudget')}</dt><dd>{formatBytes(selected.record.budget)}</dd></div>}
               <div data-result="included"><dt>{t('auditEventMemory')}</dt><dd>{selected.record.count}</dd></div>
               <div data-result={selected.record.truncated > 0 ? 'excluded' : undefined}><dt>{t('auditTruncated')}</dt><dd>{selected.record.truncated}</dd></div>
             </dl>
           </div>
-          {(selected.record.injected?.length || selected.record.truncatedNames?.length) ? <div className="dam-event-content">
-            <AuditItems result="included" title={t('auditEventMemory')} names={selected.record.injected} count={selected.record.count} />
-            <AuditItems result="excluded" title={t('auditEventTruncated')} names={selected.record.truncatedNames} count={selected.record.truncated} />
+          {selected.record.frozen !== undefined && <p className="dam-note">{t(selected.record.frozen ? 'auditFrozen' : 'auditProvisional')}</p>}
+          {(selected.record.items?.length || selected.record.injected?.length || selected.record.truncatedNames?.length) ? <div className="dam-event-content">
+            {selected.record.items === undefined && <p className="dam-note dam-event-legacy">{t('auditLegacyDetails')}</p>}
+            <AuditItems result="included" title={t('auditEventMemory')} event={selected.record} count={selected.record.count}
+              scopeLabel={scopeLabel} renderTarget={renderTarget} />
+            <AuditItems result="excluded" title={t('auditEventTruncated')} event={selected.record} count={selected.record.truncated}
+              scopeLabel={scopeLabel} renderTarget={renderTarget} />
           </div> : <p className="dam-note">{t('auditEventNoNames')}</p>}
         </article>}
       </>}
     </section>
+
+    {stats.consolidationEnabled !== undefined && <section className="dam-surface">
+      <header className="dam-section-head"><h2>{t('auditConsolidation')}</h2></header>
+      <div className="dam-audit-run">
+        {!stats.consolidationEnabled && <p className="dam-note">{t('auditRunDisabled')}</p>}
+        {stats.consolidation ? <>
+          <p><strong>{t(outcomeLabels[stats.consolidation.outcome])}</strong> · {formatDate(stats.consolidation.ts)}</p>
+          <p className="dam-note">{workspaceName(stats.consolidation.cwd)} · {t('auditRunCounts', { candidates: stats.consolidation.candidates, written: stats.consolidation.written })}</p>
+        </> : stats.consolidationEnabled && <p className="dam-note">{t('auditRunEmpty')}</p>}
+      </div>
+    </section>}
 
     {(memoryRows.length > 0 || projects.length > 0) && <div className="dam-audit-tables">
       {memoryRows.length > 0 && <section className="dam-surface">
@@ -118,8 +197,9 @@ export function MemoryActivity({ t, stats, groups, budget, active }: ActivityPro
           <thead><tr><th scope="col">{t('memoryName')}</th>{([['injected', 'statsProjectInjections'], ['truncated', 'auditTruncated'], ['reads', 'memoryReads']] as const).map(([key, label]) =>
             <th scope="col" key={key} aria-sort={sortBy === key ? 'descending' : 'none'}><button className="dam-column-sort" type="button" onClick={() => { setSortBy(key) }}>
               {t(label)}{sortBy === key && <span aria-hidden="true">↓</span>}</button></th>)}</tr></thead>
-          <tbody>{(showAllMemories ? memoryRows : memoryRows.slice(0, 8)).map(row => <tr key={row.name}>
-            <th scope="row"><span className="dam-ellipsize" title={row.name}>{row.name}</span></th><td>{row.injected}</td><td>{row.truncated}</td><td>{row.reads}</td>
+          <tbody>{(showAllMemories ? memoryRows : memoryRows.slice(0, 8)).map(row => <tr key={memoryIdentity(row.target)}>
+            <th scope="row">{renderTarget(row.target)}<span className="dam-note">{scopeLabel(row.target)}</span></th>
+            <td>{row.injected}</td><td>{row.truncated}</td><td>{row.reads ?? '—'}</td>
           </tr>)}</tbody>
         </table></div>
         {memoryRows.length > 8 && <button type="button" className="dam-btn dam-btn-quiet dam-more" aria-expanded={showAllMemories} onClick={() => { setShowAllMemories(v => !v) }}>
@@ -142,8 +222,19 @@ export function MemoryActivity({ t, stats, groups, budget, active }: ActivityPro
   </div>
 }
 
-function AuditItems({ result, title, names, count }: { result: 'included' | 'excluded'; title: string; names: string[] | undefined; count: number }): ReactNode {
-  if (!names?.length) return null
-  return <div data-result={result}><h4>{title}{count > names.length && <span className="dam-note"> {names.length} / {count}</span>}</h4>
-    <ul>{names.map((name, i) => <li key={`${i}:${name}`}><code>{name}</code></li>)}</ul></div>
+function AuditItems({ result, title, event, count, scopeLabel, renderTarget }: {
+  result: 'included' | 'excluded'; title: string; event: AuditEntry; count: number;
+  scopeLabel: (target: MemoryTarget) => string; renderTarget: (target: MemoryTarget) => ReactNode;
+}): ReactNode {
+  const included = result === 'included'
+  const names = included ? event.injected : event.truncatedNames
+  const targets = event.items === undefined ? (names ?? []).map(name => ({ name, scope: 'unknown' }))
+    : event.items.filter(item => item.included === included).map(item => ({ name: item.name, scope: item.scope,
+      slug: item.scope === 'user' ? USER_SCOPE_DIR : event.projectSlug }))
+  if (targets.length === 0) return null
+  return <div data-result={result}><h4>{title}{count > targets.length && <span className="dam-note"> {targets.length} / {count}</span>}</h4>
+    <ul>{targets.map((target, i) => <li key={`${i}:${memoryIdentity(target)}`}>
+      {renderTarget(target)}
+      {target.scope !== 'unknown' && <span className="dam-note">· {scopeLabel(target)}</span>}
+    </li>)}</ul></div>
 }

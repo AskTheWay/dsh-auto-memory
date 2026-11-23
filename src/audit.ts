@@ -24,9 +24,10 @@ import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import type { MemoryStore } from './store.ts'
-import { withLockRecovery } from './store.ts'
+import { projectKey, withLockRecovery } from './store.ts'
 import type { Config } from './index.ts'
-import { renderMemoryIndexDetail } from './prompt.ts'
+import { memoryNameFromIndexLine, renderMemoryIndexDetail, type InjectionItem } from './prompt.ts'
+import { USER_SCOPE_DIR } from './types.ts'
 
 /** 审计文件名(记忆根目录下,与 _user/--proj-- 目录平级)。 */
 export const AUDIT_FILENAME = 'audit.jsonl'
@@ -46,29 +47,30 @@ let auditChain: Promise<void> = Promise.resolve()
 /** 审计文件上限(超限保留尾部一半,锁内 rotation;常态年增长 MB 级,1MB 上限够数年)。 */
 const AUDIT_MAX_BYTES = 1_048_576
 
-export function appendAudit(rootDir: string, entry: AuditEntry): Promise<void> {
+export function appendAudit(rootDir: string, entry: AuditEntry | ConsolidationRun): Promise<void> {
   const file = join(rootDir, AUDIT_FILENAME)
-  auditChain = auditChain.then(() => withLockRecovery(file, async () => {
+  auditChain = auditChain.then(async () => {
     await fsp.mkdir(rootDir, { recursive: true })
-    await fsp.appendFile(file, `${JSON.stringify(entry)}\n`, 'utf8')
-    // rotation(锁内):超上限保留尾部一半行(完整行对齐,丢弃最旧),
-    // 审计文件是根目录下唯一只增文件且用户不可见——不设界即无界(审查确认)
-    const size = await fsp.stat(file).then(s => s.size).catch(() => 0)
-    if (size > AUDIT_MAX_BYTES) {
-      const raw = await fsp.readFile(file, 'utf8').catch(() => null)
-      if (raw !== null) {
-        const lines = raw.split('\n').filter(line => line.length > 0)
-        const keptLines: string[] = []
-        let keptBytes = 0
-        for (const line of lines.toReversed()) { // 从尾保完整行,凑够一半预算即停
-          if (keptBytes > AUDIT_MAX_BYTES / 2) break
-          keptLines.unshift(line)
-          keptBytes += line.length + 1
+    await withLockRecovery(file, async () => {
+      await fsp.appendFile(file, `${JSON.stringify(entry)}\n`, 'utf8')
+      // 超上限时在同一把锁内保留最近的完整行，按 UTF-8 字节计量。
+      const size = await fsp.stat(file).then(s => s.size).catch(() => 0)
+      if (size > AUDIT_MAX_BYTES) {
+        const raw = await fsp.readFile(file, 'utf8').catch(() => null)
+        if (raw !== null) {
+          const lines = raw.split('\n').filter(line => line.length > 0)
+          const keptLines: string[] = []
+          let keptBytes = 0
+          for (const line of lines.toReversed()) { // 从尾保完整行,凑够一半预算即停
+            if (keptBytes > AUDIT_MAX_BYTES / 2) break
+            keptLines.push(line)
+            keptBytes += Buffer.byteLength(line, 'utf8') + 1
+          }
+          await writeFileAtomic(file, `${keptLines.reverse().join('\n')}\n`, { mode: 0o600 })
         }
-        await writeFileAtomic(file, `${keptLines.join('\n')}\n`, { mode: 0o600 })
       }
-    }
-  })).catch(() => { /* 静默:审计绝不影响注入 */ })
+    })
+  }).catch(() => { /* 静默:审计绝不影响注入 */ })
   return auditChain
 }
 
@@ -86,34 +88,76 @@ export interface AuditEntry {
   truncated: string[]
   /** 注入段总字节(索引+指导+协议壳,即该会话为此付出的 prompt 成本)。 */
   bytes: number
+  /** 新记录携带真实作用域。历史记录缺失时只按名称展示。 */
+  items?: InjectionItem[]
+  budget?: number
+  frozen?: boolean
+}
+
+export const CONSOLIDATION_OUTCOMES = ['completed', 'no-transcript', 'no-route', 'unavailable', 'truncated', 'invalid-output', 'aborted', 'failed'] as const
+
+export interface ConsolidationRun {
+  kind: 'consolidation'
+  ts: number
+  cwd: string
+  sessionId: string
+  outcome: typeof CONSOLIDATION_OUTCOMES[number]
+  candidates: number
+  written: number
+}
+
+function isAuditTime(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 8_640_000_000_000_000
 }
 
 /** 读取全部审计条目(坏行跳过——对齐官方 jsonl 崩溃恢复语义:丢弃不完整尾行;文件不存在返回空)。 */
 export async function readAudit(rootDir: string): Promise<AuditEntry[]> {
+  return (await readAuditLog(rootDir)).injections
+}
+
+export async function readAuditLog(rootDir: string): Promise<{ injections: AuditEntry[]; consolidation: ConsolidationRun[] }> {
   let raw: string
   try {
     raw = await fsp.readFile(join(rootDir, AUDIT_FILENAME), 'utf8')
   } catch {
-    return []
+    return { injections: [], consolidation: [] }
   }
   const entries: AuditEntry[] = []
+  const consolidation: ConsolidationRun[] = []
   for (const line of raw.split('\n')) {
     if (line.length === 0) continue
     try {
       const parsed = JSON.parse(line) as Partial<AuditEntry>
-      if (typeof parsed.ts === 'number' && typeof parsed.sessionId === 'string' && Array.isArray(parsed.injected)) {
+      const run = parsed as Partial<ConsolidationRun>
+      if (run.kind === 'consolidation') {
+        if (isAuditTime(run.ts) && typeof run.cwd === 'string' && typeof run.sessionId === 'string'
+          && run.outcome !== undefined && CONSOLIDATION_OUTCOMES.includes(run.outcome)
+          && typeof run.candidates === 'number' && Number.isSafeInteger(run.candidates) && run.candidates >= 0
+          && typeof run.written === 'number' && Number.isSafeInteger(run.written) && run.written >= 0 && run.written <= run.candidates) {
+          consolidation.push({ kind: run.kind, ts: run.ts, cwd: run.cwd, sessionId: run.sessionId,
+            outcome: run.outcome, candidates: run.candidates, written: run.written })
+        }
+        continue
+      }
+      if (isAuditTime(parsed.ts) && typeof parsed.sessionId === 'string' && Array.isArray(parsed.injected)) {
+        const items = Array.isArray(parsed.items) && parsed.items.every(item => item !== null && typeof item === 'object'
+          && typeof item.name === 'string' && (item.scope === 'user' || item.scope === 'project') && typeof item.included === 'boolean')
+          ? parsed.items : undefined
         entries.push({
           ts: parsed.ts,
           sessionId: parsed.sessionId,
           cwd: typeof parsed.cwd === 'string' ? parsed.cwd : '',
           injected: parsed.injected.filter((n): n is string => typeof n === 'string'),
           truncated: Array.isArray(parsed.truncated) ? parsed.truncated.filter((n): n is string => typeof n === 'string') : [],
-          bytes: typeof parsed.bytes === 'number' ? parsed.bytes : 0,
+          bytes: typeof parsed.bytes === 'number' && Number.isFinite(parsed.bytes) && parsed.bytes >= 0 ? parsed.bytes : 0,
+          ...(items === undefined ? {} : { items }),
+          ...(typeof parsed.budget === 'number' && Number.isFinite(parsed.budget) && parsed.budget >= 0 ? { budget: parsed.budget } : {}),
+          ...(typeof parsed.frozen === 'boolean' ? { frozen: parsed.frozen } : {}),
         })
       }
     } catch { continue }
   }
-  return entries
+  return { injections: entries, consolidation }
 }
 
 /** 单个工作区的注入统计(按 cwd 聚合;面板"按项目"视图)。 */
@@ -145,10 +189,13 @@ export interface AuditStats {
   /** 逐记忆注入统计:注入次数降序,同频按名称;truncatedCount 是被预算挤出的次数。
    *  scope(0.9.1):该记忆当前所在作用域(user/project/both=两层同名/missing=已删除)。 */
   memories: Array<{ name: string; injectedCount: number; truncatedCount: number; lastTs: number; scope: 'user' | 'project' | 'both' | 'missing' }>
+  /** 每条确切记忆，以及无法还原作用域的旧记录（scope=unknown）。 */
+  scopedMemories: Array<{ name: string; scope: 'user' | 'project' | 'unknown'; slug?: string; injectedCount: number; truncatedCount: number }>
   /** 按工作区聚合(注入次数降序):回答"哪个项目在吃预算/被截断"。 */
   projects: AuditProjectStats[]
   /** 最近 sessionsLimit 个注入事件(时间线视图,ts 升序)。 */
-  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number; injected?: string[]; truncatedNames?: string[] }>
+  timeline: Array<{ ts: number; sessionId: string; cwd: string; count: number; bytes: number; truncated: number; injected?: string[]; truncatedNames?: string[];
+    items?: InjectionItem[]; projectSlug?: string; budget?: number; frozen?: boolean }>
 }
 
 /**
@@ -159,6 +206,14 @@ export interface AuditStats {
 export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?: MemoryStore): AuditStats {
   const perSession = new Map<string, number>()
   const perMemory = new Map<string, { injectedCount: number; truncatedCount: number; lastTs: number }>()
+  const perIdentity = new Map<string, AuditStats['scopedMemories'][number]>()
+  const countIdentity = (name: string, scope: 'user' | 'project' | 'unknown', slug: string | undefined, included: boolean): void => {
+    const key = JSON.stringify([scope, slug, name])
+    const row = perIdentity.get(key) ?? { name, scope, ...(slug === undefined ? {} : { slug }), injectedCount: 0, truncatedCount: 0 }
+    if (included) row.injectedCount++
+    else row.truncatedCount++
+    perIdentity.set(key, row)
+  }
   const perProject = new Map<string, {
     sessions: Set<string>
     injections: number
@@ -196,6 +251,16 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
       current.truncatedCount += 1
       perMemory.set(name, current)
     }
+    if (entry.items === undefined) {
+      for (const name of entry.injected) countIdentity(name, 'unknown', undefined, true)
+      for (const name of entry.truncated) countIdentity(name, 'unknown', undefined, false)
+    } else {
+      const slug = entry.cwd.length === 0 ? undefined : projectKey(entry.cwd)
+      for (const item of entry.items) {
+        if (item.scope === 'user') countIdentity(item.name, 'user', USER_SCOPE_DIR, item.included)
+        else countIdentity(item.name, slug === undefined ? 'unknown' : 'project', slug, item.included)
+      }
+    }
   }
   const avgBytes = entries.length === 0
     ? 0
@@ -211,11 +276,13 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
     // 同步走 readIndexSync(注入热路径同款),从索引行解析记忆名集合
     const namesInIndex = (scope: 'user' | 'project', cwd?: string): Set<string> => {
       const index = store.readIndexSync(scope, cwd) ?? ''
-      return new Set([...index.matchAll(/\]\(([^)\s]+)\.md\)/g)].map(m => m[1]!))
+      return new Set(index.split('\n').flatMap(line => memoryNameFromIndexLine(line) ?? []))
     }
+    const userNames = namesInIndex('user')
+    const projectNames = new Set(cwds.flatMap(cwd => [...namesInIndex('project', cwd)]))
     for (const m of memories) {
-      const inUser = namesInIndex('user').has(m.name)
-      const inProject = cwds.some(cwd => namesInIndex('project', cwd).has(m.name))
+      const inUser = userNames.has(m.name)
+      const inProject = projectNames.has(m.name)
       m.scope = inUser && inProject ? 'both' : inUser ? 'user' : inProject ? 'project' : 'missing'
     }
   }
@@ -235,6 +302,7 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
     injections: entries.length,
     avgBytes,
     memories,
+    scopedMemories: [...perIdentity.values()],
     projects,
     // 1.4.0:时间线条目携带注入/截断名单(面板展开查看具体内容);
     // 名单封顶 60 防极端载荷(单次注入常态 ~30 行)
@@ -247,6 +315,13 @@ export function aggregateAudit(entries: AuditEntry[], sessionsLimit = 50, store?
       truncated: entry.truncated.length,
       injected: entry.injected.slice(0, 60),
       truncatedNames: entry.truncated.slice(0, 60),
+      ...(entry.items === undefined ? {} : { items: [
+        ...entry.items.filter(item => item.included).slice(0, 60),
+        ...entry.items.filter(item => !item.included).slice(0, 60),
+      ] }),
+      ...(entry.cwd.length === 0 ? {} : { projectSlug: projectKey(entry.cwd) }),
+      ...(entry.budget === undefined ? {} : { budget: entry.budget }),
+      ...(entry.frozen === undefined ? {} : { frozen: entry.frozen }),
     })),
   }
 }
@@ -290,7 +365,7 @@ export function registerInjectionAudit(
     // 首条 USER 可得(词集源):一次性选择 + 定格快照
     let query = sessionId !== undefined && getQueryText !== undefined ? getQueryText(sessionId) : undefined
     if (query !== undefined && query.trim().length === 0) query = undefined
-    let detail = renderMemoryIndexDetail(store, config, cwd, query)
+    const detail = renderMemoryIndexDetail(store, config, cwd, query)
     if (detail.text.length === 0 || sessionId === undefined || cwd === undefined) {
       // 注入转空(会话中途 delete_all/删光):不记空事件,但必须复位该会话
       // 签名——否则空档后同名集合回归会被残留签名吞掉,真实再注入漏记(审查实测)。
@@ -304,12 +379,14 @@ export function registerInjectionAudit(
       // 留给下一次组装)。
       sessionSnapshot.set(sessionId, detail.text)
     }
-    const signature = `${cwd}\0${detail.injected.join(',')}\0|${detail.truncated.join(',')}`
+    const frozen = query !== undefined
+    const signature = JSON.stringify([cwd, config.maxBytes, frozen, detail.items])
     if (lastSignature.get(sessionId) === signature) return detail.text
     lastSignature.set(sessionId, signature)
     void appendAudit(rootDir, {
       ts: Date.now(), sessionId, cwd,
       injected: detail.injected, truncated: detail.truncated, bytes: detail.textBytes,
+      items: detail.items, budget: config.maxBytes, frozen,
     })
     return detail.text
     },

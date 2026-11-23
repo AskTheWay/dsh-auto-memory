@@ -17,6 +17,7 @@ export const PANEL_CSS = `
   --dam-on-green: #fff;
   --dam-blue: #2e5a83;
   --dam-plum: #6e4887;
+  --dam-on-plum: #fff;
   --dam-clay: #963f31;
   --dam-gold: #815016;
   --dam-chart-fill: #4b7b96;
@@ -33,6 +34,7 @@ export const PANEL_CSS = `
   --dam-on-green: #17352a;
   --dam-blue: #a3c7eb;
   --dam-plum: #d0b1e7;
+  --dam-on-plum: #271631;
   --dam-clay: #f4a391;
   --dam-gold: #efc385;
   --dam-chart-fill: #6d9db9;
@@ -160,6 +162,7 @@ export const PANEL_CSS = `
 }
 .dam-notice[data-error] { border-inline-start: 3px solid var(--dam-danger); }
 .dam-library-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.dam-shell .dam-search-status { margin-bottom: 10px; }
 .dam-search {
   flex: 1 1 250px;
   min-width: 0;
@@ -341,7 +344,7 @@ export const PANEL_CSS = `
 .dam-editor textarea { resize: vertical; }
 .dam-empty { display: grid; justify-items: start; gap: 7px; min-height: 158px; padding: 27px 19px; border: 1px solid var(--dam-line); border-radius: 8px; }
 .dam-empty p { color: var(--dam-muted); }
-.dam-index-usage { margin-top: 13px; padding: 0 2px; }
+.dam-index-usage { margin-bottom: 12px; padding: 0 2px; }
 .dam-index-usage > summary, .dam-checklist > summary {
   display: flex;
   align-items: center;
@@ -371,6 +374,9 @@ export const PANEL_CSS = `
 .dam-index-group summary { color: var(--dam-ink); cursor: pointer; }
 .dam-index-group .dam-body { padding: 9px; background: var(--dam-soft); max-height: 220px; overflow: auto; }
 .dam-maintenance, .dam-activity, .dam-settings-form { display: grid; gap: 15px; }
+.dam-audit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.dam-audit-toolbar .dam-select { max-width: min(100%, 560px); }
+.dam-audit-run { padding: 0 16px 12px; }
 .dam-surface, .dam-activity-overview { min-width: 0; border: 1px solid var(--dam-line); border-radius: 8px; background: var(--dam-surface); }
 .dam-section-head { align-items: baseline; padding: 13px 16px; }
 #dam-pane-activity .dam-section-head h2 { color: var(--dam-blue); }
@@ -440,6 +446,7 @@ export const PANEL_CSS = `
 .dam-event-metrics { display: flex; gap: 20px; flex-wrap: wrap; margin: 0; }
 .dam-event-metrics dd { font-weight: 610; }
 .dam-event-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
+.dam-event-legacy { grid-column: 1 / -1; }
 .dam-event-content h4 { color: var(--dam-muted); }
 .dam-event [data-result="included"] :is(h4, dd) { color: var(--dam-green); }
 .dam-event [data-result="excluded"] :is(h4, dd) { color: var(--dam-clay); }
@@ -478,6 +485,21 @@ export const PANEL_CSS = `
 .dam-preset span + span { color: var(--dam-muted); font-variant-numeric: tabular-nums; font-size: 11px; }
 .dam-preset[aria-pressed="true"] { border-color: var(--dam-plum); background: var(--dam-selected); }
 .dam-settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.dam-settings-actions .dam-btn-primary {
+  background: var(--dam-plum);
+  border-color: var(--dam-plum);
+  color: var(--dam-on-plum);
+}
+.dam-settings-actions .dam-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--dam-plum) 90%, var(--dam-on-plum));
+}
+.dam-settings-actions .dam-btn-primary:disabled {
+  background: transparent;
+  border-color: var(--dam-line);
+  color: var(--dam-muted);
+  opacity: 1;
+}
+.dam-settings-draft { color: var(--dam-plum); font-weight: 550; }
 .dam-check { margin: 0; width: 15px; height: 15px; accent-color: var(--dam-accent); }
 .dam-settings-form .dam-check { accent-color: var(--dam-plum); }
 .dam-dialog {

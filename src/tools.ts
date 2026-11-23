@@ -15,11 +15,18 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { MemoryStore } from './store.ts'
-import { normalizeName, memoryScore, DEFAULT_IMPORTANCE, detectSecrets, isExpired } from './store.ts'
+import { normalizeName, memoryScore, DEFAULT_IMPORTANCE, detectSecrets } from './store.ts'
 import { indexByteBudget } from './prompt.ts'
-import { descriptionCoverage } from './matching.ts'
+import { recallState, recallNotes, searchRecall } from './recall.ts'
 import { expandLinks } from './links.ts'
 import type { MemoryScope } from './types.ts'
+
+const recallFields = {
+  status: { type: 'string', enum: ['candidate', 'verified', 'disputed', 'superseded'] },
+  disabled: { type: 'boolean', description: 'Present when this memory is excluded from automatic injection by the user' },
+  expired: { type: 'boolean', description: 'Present when this memory passed its shelf life (validUntil)' },
+  supersededBy: { type: 'string', description: 'The name of this memory’s successor, when known' },
+} as const
 
 /**
  * 索引占用分档(1.8.0,纯函数):75%/90% 两级(受 Claude Code 官方 auto-memory
@@ -196,8 +203,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           type: { type: 'string', required: true },
           body: { type: 'string', required: true },
           scope: { type: 'string', required: true },
-          supersededBy: { type: 'string', description: 'Present when this memory is superseded: the name of its successor' },
-          expired: { type: 'boolean', description: 'Present when this memory passed its shelf life (validUntil)' },
+          ...recallFields,
           ageDays: { type: 'integer', description: 'How many days ago this memory was last updated (freshness signal)' },
           linked: {
             type: 'array',
@@ -208,17 +214,13 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
               properties: {
                 name: { type: 'string', required: true },
                 description: { type: 'string', required: true },
+                ...recallFields,
               },
             },
           },
         },
       },
       render: (_args, value) => {
-        const superseded = value.supersededBy !== undefined
-          ? `\n\n⚠ SUPERSEDED by "${value.supersededBy}" — this memory is outdated and no longer injected; memory_read the successor for the current fact.\n`
-          : ''
-        // 过期标记(1.6.0 审查修复):主动召回过期条目时明示这是历史事实——
-        // 否则模型把过期时效信息当现行事实复述
         // 新鲜度(1.7.0):召回时明示信息年龄,旧信息是线索不是事实
         // 与 EXPIRED 互斥(审查 nit):过期段已是最强提示,不再叠新鲜度
         const days = value.ageDays
@@ -228,14 +230,12 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
           : days !== undefined && days >= 180
             ? '\n\n⏳ This memory was last updated ' + String(days) + ' days ago — treat as a lead, not a fact.\n'
             : '\n\n⏳ (saved ' + String(days) + ' days ago)\n'
-        const expired = value.expired === true
-          ? '\n\n⏱ EXPIRED — this memory passed its shelf life and is no longer injected. Treat it as historical; re-confirm with the user before relying on it.\n'
-          : ''
         const linkedList = value.linked ?? []
         const linked = linkedList.length === 0
           ? ''
-          : `\n\nLinked memories:\n${linkedList.map(l => `- ${l.name} — ${l.description}`).join('\n')}`
-        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${value.body}${freshness}${superseded}${expired}${linked}` }]
+          : `\n\nLinked memories:\n${linkedList.map(l => `- ${l.name}${recallNotes(l)} — ${l.description}`).join('\n')}`
+        const notes = recallNotes(value)
+        return [{ type: 'text', text: `--- name: ${value.name}\ndescription: ${value.description}\ntype: ${value.type}\nscope: ${value.scope}\n---\n\n${notes ? `${notes.trim()}\n\n` : ''}${value.body}${freshness}${linked}` }]
       },
     },
     async execute(args, exec) {
@@ -246,22 +246,22 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         return store.findIn(args.name, availableScopes(), requireCwd(cwd))
       })()
       if (record === null) throw new Error(`memory not found: ${JSON.stringify(normalizeName(args.name))} — call memory_list to see available names`)
+      const now = Date.now()
       // 读取计数(best-effort,失败不影响返回)
       void store.touch(record.name, record.scope, cwd).catch(() => {})
       // 召回展开:一层 [[name]] 链接摘要(纯函数见 src/links.ts)
       const { linked } = await expandLinks(record.body, record.name, name =>
-        store.findIn(name, availableScopes(), cwd))
+        store.findIn(name, availableScopes(), cwd), now)
       // 新鲜度(1.7.0,sage-mem 思路):召回时明示"这段信息多旧"——模型自行
       // 打折旧信息,引用动作不该让陈旧记忆显得更权威
       const ageAnchor = record.updatedMs ?? record.createdMs
       const ageDays = ageAnchor !== undefined
-        ? Math.max(0, Math.floor((Date.now() - ageAnchor) / 86_400_000))
+        ? Math.max(0, Math.floor((now - ageAnchor) / 86_400_000))
         : undefined
       return {
         name: record.name, description: record.description, type: record.type, body: record.body, scope: record.scope, linked,
         ...(ageDays !== undefined ? { ageDays } : {}),
-        ...(record.supersededBy !== undefined ? { supersededBy: record.supersededBy } : {}),
-        ...(isExpired(record, Date.now()) ? { expired: true } : {}),
+        ...recallState(record, now),
       }
     },
     isConcurrencySafe: () => true,
@@ -332,7 +332,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
 
   ctx.tools.register(defineTool({
     name: 'memory_search',
-    description: 'Search persistent memories by keywords (CJK-aware; matches names, descriptions and bodies). Use when you need memories about a specific topic and the full list is large. Returns at most 8 best matches with a short body excerpt.',
+    description: 'Search persistent memories by keywords (CJK-aware; matches names, descriptions and bodies). Returns up to 8 matches with short excerpts and any trust or lifecycle flags. Use memory_read with the result’s name and scope for the full record.',
     parameters: {
       query: { type: 'string', required: true, description: 'Keywords to search for (space-separated)' },
       scope: { type: 'string', enum: ['project', 'user'], description: 'Limit to one scope; default searches both' },
@@ -354,6 +354,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
                 scope: { type: 'string', required: true },
                 score: { type: 'number', required: true },
                 excerpt: { type: 'string', required: true },
+                ...recallFields,
               },
             },
           },
@@ -364,7 +365,7 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         type: 'text',
         text: value.matches.length === 0
           ? `No memories match ${JSON.stringify(value.query)} — call memory_list to see all.`
-          : value.matches.map(m => `- ${m.name} (${m.scope}/${m.type}) — ${m.description}\n  excerpt: ${m.excerpt}`).join('\n'),
+          : value.matches.map(m => `- ${m.name} (${m.scope}/${m.type})${recallNotes(m)} — ${m.description}\n  excerpt: ${m.excerpt}`).join('\n'),
       }],
     },
     async execute(args, exec) {
@@ -377,25 +378,11 @@ export function registerMemoryTools(ctx: Context, store: MemoryStore, config: { 
         : availableScopes()
       const all = (await Promise.all(scopes.map(async scope =>
         scope === 'project' ? await store.list(scope, requireCwd(cwd)) : await store.list(scope)))).flat()
-      // 有向词覆盖分(query 词集 ∩ 记忆文本词集 / query 词数):words() 内置
-      // CJK bigram,中文查询自动生效;body 参与匹配是 search 相对 list 的核心价值
-      const matches = all
-        .map(record => {
-          const haystack = `${record.name}\n${record.title ?? ''}\n${record.description}\n${record.body}${record.keywords !== undefined ? `\n${record.keywords.join(' ')}` : ''}`
-          const score = descriptionCoverage(query, haystack)
-          const hitIndex = record.body.toLowerCase().indexOf(query.toLowerCase().split(/\s+/)[0] ?? '')
-          const excerpt = hitIndex >= 0
-            ? record.body.slice(Math.max(0, hitIndex - 20), hitIndex + 100).replace(/\s+/g, ' ').trim()
-            : record.body.slice(0, 100).replace(/\s+/g, ' ').trim()
-          return { name: record.name, description: record.description, type: record.type, scope: record.scope, score, excerpt: excerpt.length > 0 ? excerpt : record.description }
-        })
-        .filter(m => m.score > 0)
-        .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
-        .slice(0, 8)
+      const matches = searchRecall(all, query, Date.now())
       // 召回计数(1.4.0):搜索命中前 3 也算一次主动召回(与 memory_read 同一
       // reads 口径)——best-effort,失败不影响返回(与 touch 既有纪律一致)
       for (const match of matches.slice(0, 3)) {
-        void store.touch(match.name, match.scope as MemoryScope, cwd).catch(() => {})
+        void store.touch(match.name, match.scope, cwd).catch(() => {})
       }
       return { matches, query }
     },

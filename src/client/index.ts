@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { MemoryPage } from './MemoryPage.tsx'
 import { PANEL_CSS } from './panel-style.ts'
 import type { AuditStats, HealthReport, PanelGroup, SettingsView } from './panel-model.tsx'
+import type { LibrarySearchHit } from '../recall.ts'
 import { MemoryPanelIcon } from './MemoryPanelIcon.tsx'
 import { en, zh, type PluginMemoryLocaleKey } from './locales.ts'
 
@@ -42,6 +43,7 @@ export const inject = ['slots', 'locale', 'sessions']
 /** 面板可用的操作面(宿主半路由的浏览器侧封装;组件永不直接拿 ctx)。 */
 export interface MemoryFace {
   list: () => Promise<{ groups: PanelGroup[]; maxBytes: number; budgetBytes?: number; claudeImportPending?: number }>
+  search: (query: { query: string; user: boolean; cwd?: string }, signal: AbortSignal) => Promise<{ hits: LibrarySearchHit[] }>
   read: (query: { name: string; scope: string; cwd?: string }) => Promise<{ body: string; pinned: boolean; disabled: boolean }>
   write: (payload: { cwd?: string; scope: string; name: string; title?: string; description: string; type: string; body: string; pinned?: boolean; disabled?: boolean; status?: string; supersedes?: string; validUntilMs?: number }) => Promise<Response>
   del: (payload: { cwd?: string; scope: string; name: string }) => Promise<Response>
@@ -73,7 +75,7 @@ export interface MemoryFace {
     allToUser: boolean
   }) => Promise<Response>
   /** 0.9.0 注入审计统计(注入榜/时间线/汇总会话数)。 */
-  auditStats: () => Promise<AuditStats>
+  auditStats: (cwd?: string, signal?: AbortSignal) => Promise<AuditStats>
   /** 1.0.0 记忆体检:待验证/僵尸/矛盾/已过期四榜(只读报告;行动在记忆卡片上)。 */
   healthReport: () => Promise<HealthReport>
   /** 1.10.0 dreaming 建议清单:读提案(库变化自动过期) + 应用提案(逐条,用户确认)。 */
@@ -97,6 +99,13 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       const response = await fetch(`${BASE}/groups.list${query}`, { headers: { 'cache-control': 'no-store' } })
       if (!response.ok) throw new Error(`groups.list HTTP ${String(response.status)}`)
       return (await response.json()) as Awaited<ReturnType<MemoryFace['list']>>
+    },
+    search: async (query, signal) => {
+      const response = await fetch(`${BASE}/library.search`, {
+        method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify(query),
+      })
+      if (!response.ok) throw new Error(`library.search HTTP ${String(response.status)}`)
+      return (await response.json()) as Awaited<ReturnType<MemoryFace['search']>>
     },
     read: async ({ name, scope, cwd }) => {
       const params = new URLSearchParams({ name, scope })
@@ -127,8 +136,9 @@ function memoryFace(ctx: ClientContext): MemoryFace {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     }),
-    auditStats: async () => {
-      const response = await fetch(`${BASE}/audit.stats`, { headers: { 'cache-control': 'no-store' } })
+    auditStats: async (cwd, signal) => {
+      const query = cwd === undefined ? '' : `?${new URLSearchParams({ cwd })}`
+      const response = await fetch(`${BASE}/audit.stats${query}`, { signal, headers: { 'cache-control': 'no-store' } })
       if (!response.ok) throw new Error(`audit.stats HTTP ${String(response.status)}`)
       return (await response.json()) as ReturnType<MemoryFace['auditStats']>
     },

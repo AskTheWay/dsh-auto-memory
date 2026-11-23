@@ -20,14 +20,15 @@ import { join } from 'node:path'
 import { MemoryStore, INDEX_FILENAME, isStale, isExpired, isAging, memoryScore, parseMemory, projectKey } from './store.ts'
 import { normalizeName } from './store.ts'
 import { descriptionSimilarity } from './matching.ts'
+import { LIBRARY_QUERY_LIMIT, searchLibrary } from './recall.ts'
 import { scanClaudeMemory, annotateClaudeImport, runClaudeImport, revokeClaudeImports } from './import-claude.ts'
 import type { ImportTarget } from './import-claude.ts'
-import { readAudit, aggregateAudit } from './audit.ts'
+import { readAuditLog, aggregateAudit } from './audit.ts'
 import { loadSettings, applySettings, SETTABLE_FIELDS } from './settings.ts'
 import type { SettableField, SettingsOverrides } from './settings.ts'
 import { renderAgentsExport, trustedForExport } from './export-agents.ts'
 import { loadProposals, libraryFingerprint, PROPOSALS_FILENAME } from './dream.ts'
-import { indexByteBudget } from './prompt.ts'
+import { indexByteBudget, memoryNameFromIndexLine } from './prompt.ts'
 import { homedir } from 'node:os'
 import type { MemoryEvidence, MemoryRecord, MemoryScope, MemoryStatus, MemoryType } from './types.ts'
 import { USER_SCOPE_DIR } from './types.ts'
@@ -42,6 +43,8 @@ export interface PanelMemory {
   disabled: boolean
   /** 软淘汰命中:文件仍存在,但重建索引时不会进入注入(面板需与"生效"区分)。 */
   stale: boolean
+  /** 当前磁盘索引是否含本条，不代表已进入某个会话。 */
+  indexed?: boolean
   /** 已过有效期(1.6.0):不注入、文件保留,面板引导续期/清除。 */
   expired: boolean
   /** 长期未确认(1.7.0):candidate 超 90 天未验证——注入温和降权,引导验证。 */
@@ -98,6 +101,7 @@ async function readGroup(
     return group
   }
   const records: Array<{ record: MemoryRecord, bytes: number }> = []
+  const indexed = new Set<string>()
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue
     const file = join(dir, entry.name)
@@ -105,6 +109,10 @@ async function readGroup(
     if (raw === null) continue
     if (entry.name.toLowerCase() === INDEX_FILENAME.toLowerCase()) {
       group.indexBytes = Buffer.byteLength(raw, 'utf8')
+      for (const line of raw.split('\n')) {
+        const name = memoryNameFromIndexLine(line)
+        if (name !== undefined) indexed.add(name)
+      }
       // 面板预览截断:超大索引不应把数倍体积的 JSON 推给浏览器(审查确认)
       group.indexText = raw.length > 0 ? raw.slice(0, 8192) : null
       continue
@@ -133,6 +141,7 @@ async function readGroup(
       pinned: record.pinned === true,
       disabled: record.disabled === true,
       stale: isStale(record, staleAfterDays(), now),
+      indexed: indexed.has(record.name),
       expired: isExpired(record, now),
       aging: isAging(record, now),
       ...(record.validUntil !== undefined ? { validUntilMs: record.validUntil } : {}),
@@ -407,6 +416,28 @@ export function registerMemoryApi(
   })
 
   connection.fetch.register({
+    path: `${BASE}/library.search`, methods: ['POST'], requestBody: 'buffered',
+    fetch: async request => {
+      let input: unknown
+      try { input = await request.json() } catch { return json({ error: 'invalid JSON' }, 400) }
+      if (input === null || typeof input !== 'object' || Array.isArray(input)) return json({ error: 'invalid search' }, 400)
+      const { query, user, cwd } = input as Record<string, unknown>
+      if (typeof query !== 'string' || query.trim().length === 0 || query.length > LIBRARY_QUERY_LIMIT
+        || typeof user !== 'boolean' || (cwd !== undefined && (typeof cwd !== 'string' || cwd.trim().length === 0))) {
+        return json({ error: 'invalid query or scope' }, 400)
+      }
+      const [userRows, projectRows] = await Promise.all([
+        user ? store.list('user', undefined, request.signal) : [],
+        typeof cwd === 'string' ? store.list('project', cwd, request.signal) : [],
+      ])
+      return json({ hits: [
+        ...searchLibrary(userRows, query, USER_SCOPE_DIR),
+        ...(typeof cwd === 'string' ? searchLibrary(projectRows, query, projectKey(cwd)) : []),
+      ] })
+    },
+  })
+
+  connection.fetch.register({
     path: `${BASE}/memory.read`, methods: ['GET'], requestBody: 'buffered',
     fetch: async (request) => {
       const url = new URL(request.url)
@@ -542,11 +573,19 @@ export function registerMemoryApi(
 
   connection.fetch.register({
     path: `${BASE}/audit.stats`, methods: ['GET'], requestBody: 'buffered',
-    fetch: async () => {
-      // 注入审计统计(0.9.0):读 audit.jsonl 聚合,坏行已在读取层跳过;
-      // 0.9.1 传 store 标注每条记忆的作用域(注入榜 user/project 可分辨)
-      const entries = await readAudit(rootDir)
-      return json(aggregateAudit(entries, 50, store))
+    fetch: async request => {
+      const selected = new URL(request.url).searchParams.get('cwd')
+      const inWorkspace = (event: { cwd: string }): boolean => selected === null || (event.cwd || 'unknown') === selected
+      const log = await readAuditLog(rootDir)
+      const latestConsolidation = log.consolidation.filter(inWorkspace).reduce<(typeof log.consolidation)[number] | null>(
+        (latest, run) => latest === null || run.ts >= latest.ts ? run : latest, null)
+      return json({
+        ...aggregateAudit(log.injections.filter(inWorkspace), 50, store),
+        projectSlug: selected === null ? undefined : selected === 'unknown' ? null : projectKey(selected),
+        consolidation: latestConsolidation,
+        consolidationEnabled: config.autoSummarize === true,
+        workspaces: [...new Set([...log.injections, ...log.consolidation].map(event => event.cwd || 'unknown'))].sort(),
+      })
     },
   })
 

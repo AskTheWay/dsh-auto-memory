@@ -65,7 +65,7 @@ workspace-slug 由 session.cwd 派生(路径安全化),项目级与用户级索�
 2. **写入指导**:紧随索引的指令段,告知模型:何时该写(用户纠正/陈述偏好/项目关键决策)、
    写之前先读索引查重、按 description 匹配**更新而非堆积**、
    不写代码库/CLAUDE.md 已记录的内容。
-3. **token 预算**:`maxBytes` 配置(默认 4096 字节)限制注入的索引+指令总长;
+3. **token 预算**:`maxBytes` 配置(默认 16384 字节)限制注入的索引与指令总长。
    超预算时按行截断(保留用户级),截断处留标记。
 
 ## 4. 工具面(对齐 Claude Code 的 Memory 工具语义)
@@ -111,7 +111,7 @@ workspace-slug 由 session.cwd 派生(路径安全化),项目级与用户级索�
 - `package.json` 带 `dsh.bundle` 声明;`cordis.patch.yml` 贡献挂载行
 - 运行时依赖仅 `yaml` + `@deepseek-ai/schemastery`(官方惯例放 dependencies);
   框架包全走 peerDependencies(绝不放 dependencies,会装出第二 cordis 实例)
-- 配置(schemastery):`maxBytes`(默认 4096)、`memoryDir`(默认 `$DSH_HOME/memory`)、
+- 配置(schemastery):`maxBytes`(默认 16384)、`memoryDir`(默认 `$DSH_HOME/memory`)、
   `enableUserScope`(默认 true)、`autoSummarize`(默认 false,P1)
 
 ## 7. 明确不做

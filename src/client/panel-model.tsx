@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 import type { PluginMemoryLocaleKey } from './locales.ts'
+import type { ConsolidationRun } from '../audit.ts'
+import type { InjectionItem } from '../prompt.ts'
 
 export type Translate = (key: PluginMemoryLocaleKey, params?: Record<string, string | number>) => string
 
@@ -11,6 +13,7 @@ export interface PanelMemory {
   pinned: boolean
   disabled: boolean
   stale: boolean
+  indexed?: boolean
   expired: boolean
   aging: boolean
   validUntilMs?: number
@@ -69,6 +72,10 @@ export interface AuditEntry {
   truncated: number
   injected?: string[]
   truncatedNames?: string[]
+  items?: InjectionItem[]
+  projectSlug?: string
+  budget?: number
+  frozen?: boolean
 }
 
 export interface ProjectAudit {
@@ -86,8 +93,13 @@ export interface AuditStats {
   injections: number
   avgBytes?: number
   memories: Array<{ name: string; injectedCount: number; truncatedCount?: number; lastTs: number }>
+  scopedMemories?: Array<{ name: string; scope: 'user' | 'project' | 'unknown'; slug?: string; injectedCount: number; truncatedCount: number }>
   projects?: ProjectAudit[]
   timeline: AuditEntry[]
+  projectSlug?: string | null
+  workspaces?: string[]
+  consolidation?: ConsolidationRun | null
+  consolidationEnabled?: boolean
 }
 
 export const memoryTypes = {

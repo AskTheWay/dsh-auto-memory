@@ -4,12 +4,15 @@
  */
 
 import type { MemoryRecord } from './types.ts'
+import { recallState, type RecallState } from './recall.ts'
+
+type LinkTarget = Pick<MemoryRecord, 'name' | 'description' | 'status' | 'disabled' | 'validUntil' | 'supersededBy'>
 
 /** 单次 read 最多展开的链接数。 */
 export const LINK_LIMIT = 3
 
 /** 链接摘要(附在读取结果尾部)。 */
-export interface LinkedSummary {
+export interface LinkedSummary extends RecallState {
   name: string
   description: string
 }
@@ -24,7 +27,8 @@ export interface LinkedSummary {
 export async function expandLinks(
   body: string,
   selfName: string,
-  lookup: (name: string) => Promise<Pick<MemoryRecord, 'name' | 'description'> | null> | Pick<MemoryRecord, 'name' | 'description'> | null,
+  lookup: (name: string) => Promise<LinkTarget | null> | LinkTarget | null,
+  now = Date.now(),
 ): Promise<{ linked: LinkedSummary[]; truncated: boolean }> {
   const names = [...body.matchAll(/\[\[([a-z0-9]+(?:-[a-z0-9]+)*)\]\]/g)].map(m => m[1])
   const unique = [...new Set(names)].filter(name => name !== selfName)
@@ -32,7 +36,7 @@ export async function expandLinks(
   for (const name of unique) {
     if (linked.length >= LINK_LIMIT) break
     const target = await lookup(name)
-    if (target !== null) linked.push({ name: target.name, description: target.description })
+    if (target !== null) linked.push({ name: target.name, description: target.description, ...recallState(target, now) })
   }
   return { linked, truncated: unique.length > linked.length }
 }
